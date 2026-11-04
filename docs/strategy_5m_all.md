@@ -314,7 +314,9 @@ FastAPI + uvicorn 跑在策略的同一个事件循环里，端口 **8033**
 
 ### 8.5 鉴权与操作
 
-- `WEB_PASSWORD` 非空时启用 HTTP Basic auth；默认空 = 无鉴权（仅适合内网）。
+- `WEB_PASSWORD` 非空时启用 `/login` 登录页 + `poly5m_session` HttpOnly
+  Cookie（默认 7 天，`WEB_SESSION_TTL_S`）；默认空 = 无鉴权（仅适合内网）。
+  登录会话在进程内存中，重启后需要重新登录。
 - `POST /api/pause` 暂停新开仓；`POST /api/flatten` 需要
   `{"confirm":"FLATTEN"}` 才会全部市价平仓。
 - `/healthz` 免鉴权，供探活。
@@ -369,12 +371,12 @@ FastAPI + uvicorn 跑在策略的同一个事件循环里，端口 **8033**
    FAK、不挂 GTD，因此不会被 1h bot 的 startup reconcile 取消；但资金池是
    共享的，建议给两个策略分别预留资金，或先只让其中一个跑实盘。
 6. Web 后端默认监听 `0.0.0.0:8033`。对公网暴露前必须设置 `WEB_PASSWORD`
-   （HTTP Basic），或把 `WEB_HOST` 改为 `127.0.0.1` / 内网地址；否则同网络
-   任何人都能改配置或触发全部平仓。
+   （登录页会话 Cookie），或把 `WEB_HOST` 改为 `127.0.0.1` / 内网地址；
+   否则同网络任何人都能改配置或触发全部平仓。
 
 ## 12. 测试矩阵
 
-`python -m pytest -q`（43 个测试）：
+`python -m pytest -q`（44 个测试）：
 
 - `test_config.py`：文档默认参数、非法阈值、费后为负识别；
 - `test_strategy.py`：0–60s 入场、60s 后 TP、bid 触发、240s 强平、
@@ -389,7 +391,7 @@ FastAPI + uvicorn 跑在策略的同一个事件循环里，端口 **8033**
   fills 兜底解析；
 - `test_runtime_config.py`：默认仅 BTC、启用/参数覆盖、持久化/重载、重置、非法值；
 - `test_web.py`：页面、状态、配置 PUT、交易分页/筛选、统计、暂停/平仓、
-  HTTP Basic 鉴权。
+  登录页/会话 Cookie/登出/未登录 302/401。
 
 ## 13. 后续可做（不在本次范围）
 

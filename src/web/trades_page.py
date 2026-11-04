@@ -7,96 +7,127 @@ _BODY = r"""
 <div class="page-head">
   <div>
     <h1>交易记录</h1>
-    <div class="page-sub">已平仓交易 · 净 PnL 已扣 0.07 taker 费 · 时间为浏览器本地时间</div>
+    <div class="page-sub">已平仓交易 · 净 PnL 已扣 0.07 taker 费 · 表格时间为浏览器本地时间</div>
   </div>
   <div class="head-meta">数据源 <span class="mono">data/trades.jsonl</span></div>
 </div>
 
-<div class="cards">
-  <div class="card"><span>今日净 PnL (UTC)</span><strong id="today-pnl">--</strong>
-    <div class="muted" id="today-sub">--</div></div>
-  <div class="card"><span>累计净 PnL</span><strong id="total-pnl">--</strong>
-    <div class="muted" id="total-sub">--</div></div>
-  <div class="card"><span>胜率</span><strong id="win-rate">--</strong>
-    <div class="muted" id="win-sub">--</div></div>
-  <div class="card"><span>盈亏比</span><strong id="profit-factor">--</strong>
-    <div class="muted" id="pf-sub">--</div></div>
-  <div class="card"><span>累计手续费</span><strong id="fees">--</strong>
-    <div class="muted">entry + exit</div></div>
-  <div class="card"><span>最大回撤</span><strong id="max-dd">--</strong>
-    <div class="muted">按平仓顺序</div></div>
+<div class="stats-row">
+  <div class="stat-card">
+    <div class="stat-label">今日净 PnL (UTC)</div>
+    <div class="stat-value" id="today-pnl">--</div>
+    <div class="stat-sub" id="today-sub">--</div>
+  </div>
+  <div class="stat-card">
+    <div class="stat-label">累计净 PnL</div>
+    <div class="stat-value" id="total-pnl">--</div>
+    <div class="stat-sub" id="total-sub">--</div>
+  </div>
+  <div class="stat-card">
+    <div class="stat-label">胜率</div>
+    <div class="stat-value purple" id="win-rate">--</div>
+    <div class="stat-sub" id="win-sub">--</div>
+  </div>
+  <div class="stat-card">
+    <div class="stat-label">盈亏比</div>
+    <div class="stat-value orange" id="profit-factor">--</div>
+    <div class="stat-sub" id="pf-sub">--</div>
+  </div>
+  <div class="stat-card">
+    <div class="stat-label">累计手续费</div>
+    <div class="stat-value red" id="fees">--</div>
+    <div class="stat-sub">entry + exit</div>
+  </div>
+  <div class="stat-card">
+    <div class="stat-label">最大回撤</div>
+    <div class="stat-value red" id="max-dd">--</div>
+    <div class="stat-sub">按平仓顺序</div>
+  </div>
 </div>
 
-<div class="controls">
-  <select id="f-asset" style="width:150px">
-    <option value="">全部币种</option>
-  </select>
-  <select id="f-reason" style="width:150px">
-    <option value="">全部原因</option>
-    <option value="tp">tp（止盈）</option>
-    <option value="time_exit">time_exit（240s）</option>
-    <option value="settle">settle（结算）</option>
-    <option value="shutdown">shutdown（退出）</option>
-  </select>
-  <select id="f-mode" style="width:130px">
-    <option value="">全部模式</option>
-    <option value="paper">纸面</option>
-    <option value="live">实盘</option>
-  </select>
-  <button id="refresh-btn">刷新</button>
-  <span class="msg" id="msg"></span>
+<div class="control-bar">
+  <div class="control-status">
+    <span class="control-label">筛选</span>
+    <select id="f-asset" style="width:140px">
+      <option value="">全部币种</option>
+    </select>
+    <select id="f-reason" style="width:150px">
+      <option value="">全部原因</option>
+      <option value="tp">tp（止盈）</option>
+      <option value="time_exit">time_exit（240s）</option>
+      <option value="settle">settle（结算）</option>
+      <option value="shutdown">shutdown（退出）</option>
+    </select>
+    <select id="f-mode" style="width:120px">
+      <option value="">全部模式</option>
+      <option value="paper">纸面</option>
+      <option value="live">实盘</option>
+    </select>
+  </div>
+  <div class="controls" style="margin:0">
+    <button id="refresh-btn" class="btn btn-ghost btn-sm">刷新</button>
+    <span class="msg" id="msg"></span>
+  </div>
 </div>
 
-<h2>交易明细 <span class="pill" id="trade-count">0</span></h2>
-<div class="table-wrap">
-<table>
-  <thead><tr>
-    <th>时间</th><th>资产</th><th>方向</th><th>原因</th><th>模式</th>
-    <th class="num">入场</th><th class="num">出场</th><th class="num">份额</th>
-    <th class="num">毛 PnL</th><th class="num">费用</th><th class="num">净 PnL</th>
-    <th class="num">持有</th>
-  </tr></thead>
-  <tbody id="rows"><tr><td colspan="12" class="no-data">加载中...</td></tr></tbody>
-</table>
-</div>
-<div class="pager">
-  <button id="prev">上一页</button>
-  <span class="pager-info" id="page-info">--</span>
-  <button id="next">下一页</button>
-</div>
-
-<h2>分币种统计</h2>
-<div class="table-wrap">
-<table>
-  <thead><tr>
-    <th>资产</th><th class="num">笔数</th><th class="num">胜/负</th>
-    <th class="num">胜率</th><th class="num">净 PnL</th><th class="num">毛 PnL</th>
-    <th class="num">费用</th><th class="num">最大回撤</th>
-  </tr></thead>
-  <tbody id="by-asset"><tr><td colspan="8" class="no-data">加载中...</td></tr></tbody>
-</table>
+<div class="section">
+  <h2>交易明细 <span class="pill" id="trade-count">0</span></h2>
+  <div class="table-wrap">
+    <table>
+      <thead><tr>
+        <th>时间</th><th>资产</th><th>方向</th><th>原因</th><th>模式</th>
+        <th class="num">入场</th><th class="num">出场</th><th class="num">份额</th>
+        <th class="num">毛 PnL</th><th class="num">费用</th><th class="num">净 PnL</th>
+        <th class="num">持有</th>
+      </tr></thead>
+      <tbody id="rows"><tr><td colspan="12" class="no-data">加载中...</td></tr></tbody>
+    </table>
+  </div>
+  <div class="pager">
+    <button id="prev" class="btn btn-ghost btn-sm">上一页</button>
+    <span class="pager-info" id="page-info">--</span>
+    <button id="next" class="btn btn-ghost btn-sm">下一页</button>
+  </div>
 </div>
 
-<h2>按原因统计</h2>
-<div class="table-wrap">
-<table>
-  <thead><tr>
-    <th>原因</th><th class="num">笔数</th><th class="num">胜/负</th>
-    <th class="num">净 PnL</th><th class="num">费用</th><th class="num">胜率</th>
-  </tr></thead>
-  <tbody id="by-reason"><tr><td colspan="6" class="no-data">加载中...</td></tr></tbody>
-</table>
+<div class="section">
+  <h2>分币种统计</h2>
+  <div class="table-wrap">
+    <table>
+      <thead><tr>
+        <th>资产</th><th class="num">笔数</th><th class="num">胜/负</th>
+        <th class="num">胜率</th><th class="num">净 PnL</th><th class="num">毛 PnL</th>
+        <th class="num">费用</th><th class="num">最大回撤</th>
+      </tr></thead>
+      <tbody id="by-asset"><tr><td colspan="8" class="no-data">加载中...</td></tr></tbody>
+    </table>
+  </div>
 </div>
 
-<h2>按日统计</h2>
-<div class="table-wrap">
-<table>
-  <thead><tr>
-    <th>日期 (UTC)</th><th class="num">笔数</th><th class="num">胜/负</th>
-    <th class="num">净 PnL</th><th class="num">费用</th><th class="num">胜率</th>
-  </tr></thead>
-  <tbody id="by-day"><tr><td colspan="6" class="no-data">加载中...</td></tr></tbody>
-</table>
+<div class="section">
+  <h2>按原因统计</h2>
+  <div class="table-wrap">
+    <table>
+      <thead><tr>
+        <th>原因</th><th class="num">笔数</th><th class="num">胜/负</th>
+        <th class="num">净 PnL</th><th class="num">费用</th><th class="num">胜率</th>
+      </tr></thead>
+      <tbody id="by-reason"><tr><td colspan="6" class="no-data">加载中...</td></tr></tbody>
+    </table>
+  </div>
+</div>
+
+<div class="section">
+  <h2>按日统计</h2>
+  <div class="table-wrap">
+    <table>
+      <thead><tr>
+        <th>日期 (UTC)</th><th class="num">笔数</th><th class="num">胜/负</th>
+        <th class="num">净 PnL</th><th class="num">费用</th><th class="num">胜率</th>
+      </tr></thead>
+      <tbody id="by-day"><tr><td colspan="6" class="no-data">加载中...</td></tr></tbody>
+    </table>
+  </div>
 </div>
 """
 
@@ -112,17 +143,17 @@ function reasonLabel(r) {
     time_exit: 'time_exit（240s）',
     settle: 'settle（结算）',
     shutdown: 'shutdown（退出）',
-  })[String(r || '').toLowerCase()] || (r || '-');
+  })[String(r || '').toLowerCase()] || (r || '--');
 }
 
 function renderStats(stats) {
   const t = stats.today || {};
   const a = stats.total || {};
   $('today-pnl').textContent = money(t.net, 4);
-  $('today-pnl').className = cls(t.net);
+  $('today-pnl').className = 'stat-value ' + cls(t.net);
   $('today-sub').textContent = `${t.trades || 0} 笔 · ${t.wins || 0} 胜 / ${t.losses || 0} 负`;
   $('total-pnl').textContent = money(a.net, 4);
-  $('total-pnl').className = cls(a.net);
+  $('total-pnl').className = 'stat-value ' + cls(a.net);
   $('total-sub').textContent = `${a.trades || 0} 笔 · 毛 ${fmt(a.gross, 2)}`;
   $('win-rate').textContent = pct(a.win_rate);
   $('win-sub').textContent = `${a.wins || 0} 胜 / ${a.losses || 0} 负`;
@@ -130,9 +161,7 @@ function renderStats(stats) {
     ? (a.wins ? '∞' : '--') : fmt(a.profit_factor, 2);
   $('pf-sub').textContent = `均赢 ${money(a.avg_win, 2)} · 均亏 ${money(a.avg_loss, 2)}`;
   $('fees').textContent = fmt(a.fees, 2) + ' U';
-  $('fees').className = 'neg';
   $('max-dd').textContent = fmt(a.max_drawdown, 2) + ' U';
-  $('max-dd').className = 'neg';
 
   const byAsset = Object.entries(stats.by_asset || {});
   $('by-asset').innerHTML = byAsset.map(([asset, s]) => `<tr>
@@ -142,8 +171,8 @@ function renderStats(stats) {
     <td class="num">${pct(s.win_rate)}</td>
     <td class="num ${cls(s.net)}">${money(s.net, 4)}</td>
     <td class="num">${fmt(s.gross, 2)}</td>
-    <td class="num neg">${fmt(s.fees, 2)}</td>
-    <td class="num neg">${fmt(s.max_drawdown, 2)}</td>
+    <td class="num red">${fmt(s.fees, 2)}</td>
+    <td class="num red">${fmt(s.max_drawdown, 2)}</td>
   </tr>`).join('') || '<tr><td colspan="8" class="no-data">暂无数据</td></tr>';
 
   const byReason = Object.entries(stats.by_reason || {});
@@ -152,7 +181,7 @@ function renderStats(stats) {
     <td class="num">${s.trades || 0}</td>
     <td class="num">${s.wins || 0} / ${s.losses || 0}</td>
     <td class="num ${cls(s.net)}">${money(s.net, 4)}</td>
-    <td class="num neg">${fmt(s.fees, 2)}</td>
+    <td class="num red">${fmt(s.fees, 2)}</td>
     <td class="num">${pct(s.win_rate)}</td>
   </tr>`).join('') || '<tr><td colspan="6" class="no-data">暂无数据</td></tr>';
 
@@ -162,7 +191,7 @@ function renderStats(stats) {
     <td class="num">${s.trades || 0}</td>
     <td class="num">${s.wins || 0} / ${s.losses || 0}</td>
     <td class="num ${cls(s.net)}">${money(s.net, 4)}</td>
-    <td class="num neg">${fmt(s.fees, 2)}</td>
+    <td class="num red">${fmt(s.fees, 2)}</td>
     <td class="num">${pct(s.win_rate)}</td>
   </tr>`).join('') || '<tr><td colspan="6" class="no-data">暂无数据</td></tr>';
 }
@@ -187,7 +216,7 @@ function renderTrades(payload) {
         <td class="num">${fmt(r.exit_price, 3)}</td>
         <td class="num">${fmt(r.shares, 2)}</td>
         <td class="num ${cls(r.pnl_gross)}">${money(r.pnl_gross, 4)}</td>
-        <td class="num neg">${fmt(fees, 4)}</td>
+        <td class="num red">${fmt(fees, 4)}</td>
         <td class="num ${cls(r.pnl_net)}">${money(r.pnl_net, 4)}</td>
         <td class="num">${fmt(hold, 0)}s</td>
       </tr>`;

@@ -20,13 +20,12 @@ Set ``WEB_PASSWORD`` to enable HTTP Basic auth.  Empty means open access.
 from __future__ import annotations
 
 import asyncio
-import secrets
 from typing import Any
+from urllib.parse import quote
 
-from fastapi import Body, Depends, FastAPI, HTTPException, Query
+from fastapi import Body, Depends, FastAPI, HTTPException, Query, Request
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import HTMLResponse
-from fastapi.security import HTTPBasic, HTTPBasicCredentials
+from fastapi.responses import HTMLResponse, JSONResponse, RedirectResponse
 from pydantic import BaseModel
 
 from src.config import Settings
@@ -34,10 +33,12 @@ from src.economics import fee_line
 from src.infra.logging import get_logger
 from src.runtime_config import RuntimeConfig
 from src.store import StateStore
+from src.web.auth import SESSION_COOKIE, SessionManager
 from src.web.config_page import CONFIG_HTML
 from src.web.dashboard import INDEX_HTML
 from src.web.stats import compute_stats
 from src.web.trades_page import TRADES_HTML
+from src.web.ui import render_login_page
 
 log = get_logger("web")
 
@@ -49,6 +50,18 @@ class PauseBody(BaseModel):
 
 class FlattenBody(BaseModel):
     confirm: str = ""
+
+
+class LoginBody(BaseModel):
+    username: str = ""
+    password: str = ""
+
+
+def _is_https(request: Request) -> bool:
+    proto = (
+        request.headers.get("x-forwarded-proto", "").split(",")[0].strip().lower()
+    )
+    return request.url.scheme == "https" or proto == "https"
 
 
 def create_app(
@@ -68,6 +81,12 @@ def create_app(
     app.state.runner = runner
     app.state.store = store
     app.state.runtime = runtime
+    sessions = SessionManager(
+        settings.web.username,
+        settings.web.password,
+        settings.web.session_ttl_s,
+    )
+    app.state.sessions = sessions
 
     origins = list(settings.web.cors_origins) or ["*"]
     app.add_middleware(
@@ -78,33 +97,73 @@ def create_app(
         allow_headers=["*"],
     )
 
-    security = HTTPBasic(auto_error=False)
+    def require_auth(request: Request):
+        session = sessions.validate(request.cookies.get(SESSION_COOKIE))
+        if session is not None:
+            return session
+        if request.url.path.startswith("/api/"):
+            raise HTTPException(status_code=401, detail="authentication required")
+        next_path = request.url.path
+        if request.url.query:
+            next_path += "?" + request.url.query
+        raise HTTPException(
+            status_code=303,
+            headers={
+                "Location": f"/login?next={quote(next_path, safe='')}"
+            },
+        )
 
-    def require_auth(
-        credentials: HTTPBasicCredentials | None = Depends(security),
-    ) -> None:
-        if not settings.web.auth_enabled:
-            return
-        if credentials is None:
-            raise HTTPException(
-                status_code=401,
-                detail="authentication required",
-                headers={"WWW-Authenticate": "Basic"},
-            )
-        user_ok = secrets.compare_digest(
-            (credentials.username or "").encode("utf-8"),
-            settings.web.username.encode("utf-8"),
+    # ── auth ───────────────────────────────────────────────────────────
+    @app.get("/login", response_class=HTMLResponse)
+    async def login_page(request: Request):
+        if not sessions.enabled or sessions.validate(
+            request.cookies.get(SESSION_COOKIE)
+        ):
+            return RedirectResponse("/", status_code=303)
+        return HTMLResponse(render_login_page())
+
+    @app.get("/api/auth/me")
+    async def api_auth_me(request: Request) -> dict[str, Any]:
+        session = sessions.validate(request.cookies.get(SESSION_COOKIE))
+        return {
+            "authenticated": (not sessions.enabled) or session is not None,
+            "username": session.username if session else "",
+            "auth_enabled": sessions.enabled,
+        }
+
+    @app.post("/api/auth/login")
+    async def api_auth_login(
+        request: Request, body: LoginBody
+    ) -> dict[str, Any]:
+        if not sessions.enabled:
+            return {"ok": True, "auth_enabled": False, "username": ""}
+        token = sessions.login(body.username, body.password)
+        if token is None:
+            raise HTTPException(status_code=401, detail="用户名或密码错误")
+        response = JSONResponse(
+            {
+                "ok": True,
+                "auth_enabled": True,
+                "username": sessions.username,
+            }
         )
-        pass_ok = secrets.compare_digest(
-            (credentials.password or "").encode("utf-8"),
-            settings.web.password.encode("utf-8"),
+        response.set_cookie(
+            SESSION_COOKIE,
+            token,
+            max_age=sessions.ttl_s,
+            httponly=True,
+            samesite="lax",
+            secure=_is_https(request),
+            path="/",
         )
-        if not (user_ok and pass_ok):
-            raise HTTPException(
-                status_code=401,
-                detail="invalid credentials",
-                headers={"WWW-Authenticate": "Basic"},
-            )
+        return response
+
+    @app.post("/api/auth/logout")
+    async def api_auth_logout(request: Request) -> dict[str, Any]:
+        sessions.logout(request.cookies.get(SESSION_COOKIE))
+        response = JSONResponse({"ok": True})
+        response.delete_cookie(SESSION_COOKIE, path="/")
+        return response
 
     # ── pages ──────────────────────────────────────────────────────────
     @app.get("/", response_class=HTMLResponse)

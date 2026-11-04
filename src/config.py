@@ -182,6 +182,7 @@ class WebConfig:
     port: int = 8033
     username: str = "admin"
     password: str = ""
+    session_ttl_s: int = 7 * 24 * 3600
     log_level: str = "warning"
     cors_origins: tuple[str, ...] = ("*",)
 
@@ -555,6 +556,15 @@ def _load_web(web_raw: dict[str, Any]) -> WebConfig:
         password=_env(
             "WEB_PASSWORD", str(_get(web_raw, "PASSWORD", ""))
         ),
+        session_ttl_s=_env_int(
+            "WEB_SESSION_TTL_S",
+            int(
+                _as_float(
+                    _get(web_raw, "SESSION_TTL_S", 7 * 24 * 3600),
+                    7 * 24 * 3600,
+                )
+            ),
+        ),
         log_level=_env(
             "WEB_LOG_LEVEL", str(_get(web_raw, "LOG_LEVEL", "warning"))
         ).lower()
@@ -622,6 +632,8 @@ def validate_settings(settings: Settings) -> None:
             raise ConfigError(f"WEB_PORT must be in 1..65535, got {w.port}")
         if not w.host:
             raise ConfigError("WEB_HOST must not be empty")
+        if w.session_ttl_s < 60:
+            raise ConfigError("WEB_SESSION_TTL_S must be >= 60")
 
     if not settings.assets:
         raise ConfigError("no assets configured")

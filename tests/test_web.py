@@ -177,7 +177,20 @@ def test_pause_and_flatten(client):
     assert r.json()["ok"] is True
 
 
-def test_http_basic_auth(tmp_path):
+def test_login_page_when_auth_disabled(tmp_path):
+    settings = load_settings()
+    runtime = RuntimeConfig(tmp_path / "runtime_config.json", settings.assets)
+    store = StateStore(tmp_path)
+    app = create_app(settings, FakeRunner(), store, runtime)
+    with TestClient(app) as c:
+        r = c.get("/login", follow_redirects=False)
+        assert r.status_code == 303
+        assert r.headers["location"] == "/"
+        # Open access: API works without a cookie.
+        assert c.get("/api/status").status_code == 200
+
+
+def test_login_session_auth(tmp_path):
     settings = load_settings()
     settings = dataclasses.replace(
         settings,
@@ -187,6 +200,39 @@ def test_http_basic_auth(tmp_path):
     store = StateStore(tmp_path)
     app = create_app(settings, FakeRunner(), store, runtime)
     with TestClient(app) as c:
+        # API returns JSON 401, not a browser Basic-auth challenge.
+        r = c.get("/api/status")
+        assert r.status_code == 401
+        assert "www-authenticate" not in {k.lower() for k in r.headers}
+
+        # HTML pages redirect to the login page.
+        r = c.get("/", follow_redirects=False)
+        assert r.status_code == 303
+        assert "/login?next=%2F" in r.headers["location"]
+
+        r = c.get("/login")
+        assert r.status_code == 200
+        assert "登录" in r.text
+
+        assert c.post(
+            "/api/auth/login",
+            json={"username": "admin", "password": "bad"},
+        ).status_code == 401
+
+        r = c.post(
+            "/api/auth/login",
+            json={"username": "admin", "password": "secret"},
+        )
+        assert r.status_code == 200
+        cookie = r.headers.get("set-cookie", "")
+        assert "poly5m_session=" in cookie
+        assert "HttpOnly" in cookie
+        assert "SameSite=lax" in cookie or "samesite=lax" in cookie.lower()
+
+        assert c.get("/api/status").status_code == 200
+        me = c.get("/api/auth/me").json()
+        assert me["authenticated"] is True
+        assert me["auth_enabled"] is True
+
+        assert c.post("/api/auth/logout").status_code == 200
         assert c.get("/api/status").status_code == 401
-        assert c.get("/api/status", auth=("admin", "secret")).status_code == 200
-        assert c.get("/api/status", auth=("admin", "bad")).status_code == 401

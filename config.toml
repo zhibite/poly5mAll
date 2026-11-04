@@ -84,6 +84,8 @@ PORT = 8033
 # Set WEB_PASSWORD in .env to enable HTTP Basic auth.  Empty = open access.
 USERNAME = "admin"
 PASSWORD = ""
+# Login session lifetime (seconds).  In-memory: a restart forces re-login.
+SESSION_TTL_S = 604800
 LOG_LEVEL = "warning"
 # Comma-separated origins, or "*" for any frontend origin.
 CORS_ORIGINS = "*"

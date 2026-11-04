@@ -165,8 +165,17 @@ docker compose logs -f
 ### 5.4 鉴权
 
 默认 `WEB_PASSWORD` 为空（内网/本机方便）。**对外暴露前必须在 `.env`
-设置 `WEB_PASSWORD`**，页面和 API 会启用 HTTP Basic auth（用户名
-`WEB_USERNAME`，默认 `admin`）。`/healthz` 始终免鉴权。
+设置 `WEB_PASSWORD`**。设置后：
+
+- 访问 `/`、`/trades`、`/config` 会跳转到 **`/login` 登录页**（不是浏览器
+  Basic 弹框）；
+- 登录成功后写入 `poly5m_session` HttpOnly Cookie，默认 7 天有效
+  （`WEB_SESSION_TTL_S`）；
+- 导航栏显示用户名和“退出”；会话保存在进程内存，重启后需要重新登录；
+- API 未登录返回 JSON `401`，HTML 页面 303 跳转登录页；
+- `/healthz`、`/login`、`/api/auth/*` 免鉴权。
+
+样式参考 `../02.poly1h` 的紫色暗色主题。
 
 ## 6. 目录
 
@@ -193,7 +202,7 @@ src/
   web/config_page.py        7 币策略配置页面
   web/stats.py              交易统计（PnL/胜率/盈亏比/回撤/分币种/按日）
   main.py                   CLI 入口
-tests/                      43 个离线测试（策略、paper 撮合、状态机、配置、FAK 解析、Web API）
+tests/                      44 个离线测试（策略、paper 撮合、状态机、配置、FAK 解析、Web API/登录）
 docs/strategy_5m_all.md     详细设计与口径
 ```
 
@@ -239,7 +248,8 @@ docs/strategy_5m_all.md     详细设计与口径
 | `FLATTEN_ON_EXIT` | false | 优雅退出时尽力卖出未平仓仓位 |
 | `/api/pause` / 页面按钮 | — | 运行时暂停新开仓；已有仓位照常管理 |
 | `/config` 启用开关 | 仅 BTC | 关闭某币只停新开仓，不影响已有仓位离场 |
-| `WEB_PASSWORD` | 空 | 后端 HTTP Basic 鉴权；对外暴露前必须设置 |
+| `WEB_PASSWORD` | 空 | 登录页密码；对外暴露前必须设置 |
+| `WEB_SESSION_TTL_S` | 604800 | 登录 Cookie 有效期（秒）；重启后失效 |
 
 240s 强平失败时不会“假装平仓”：仓位会保留、状态变 `SETTLE_PENDING`，
 并在窗口结束后用 Gamma 的 0/1 结算价记账。实盘赢方 token 的赎回可能仍需
@@ -249,7 +259,7 @@ docs/strategy_5m_all.md     详细设计与口径
 
 ```bash
 python -m pytest -q
-# 43 passed
+# 44 passed
 ```
 
 测试覆盖：文档参数加载/校验、费用公式与 breakeven、入场只在 0–60s、
