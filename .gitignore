@@ -1,0 +1,14 @@
+__pycache__/
+*.py[cod]
+.pytest_cache/
+.ruff_cache/
+.venv/
+.env
+.env.local
+data/
+!data/.gitkeep
+recheck_results/
+*.log
+
+# Research/backtest data is kept out of the deployed repo.
+backtest/

@@ -1,0 +1,153 @@
+###############################################################################
+# 06.poly5mAll — 7-asset 5m Up/Down rebound strategy (strategy 1)
+#
+# Parameters reproduce docs/all_5m_strategy1_summary.md §2 "生产推荐".
+# Strategy timeline (per 300 s window):
+#   0–60 s   observe + first touch of ENTRY_THRESH -> buy
+#   60–240 s take profit at entry_price * (1 + TP_PCT)
+#   240 s    forced exit at market (the doc's "240s SL single-point")
+###############################################################################
+
+[GENERAL]
+# 5m markets only.  Changing this without changing the strategy is not
+# supported: the 60/240 s boundaries are tied to a 300 s window.
+WINDOW_SEC = 300
+ENTRY_WINDOW_END_S = 60.0
+TP_WINDOW_START_S = 60.0
+FORCE_EXIT_S = 240.0
+# Retry a failed forced exit until this many seconds after window start.
+FORCE_EXIT_DEADLINE_S = 295.0
+# Strategy evaluation cadence.  The CLOB WS is event-driven on top of this.
+TICK_S = 0.25
+
+[FEED]
+# Price layer adapted from ../02.poly1h:
+#   * Gamma /events?slug=... for 5m market discovery
+#   * CLOB market WebSocket for best bid/ask + last trade
+#   * CLOB /midpoint polled every REST_MIDPOINT_POLL_S as the stable fallback
+USE_WS = true
+REST_MIDPOINT_POLL_S = 2.0
+MARKET_DISCOVERY_S = 2.0
+# Start looking for the next 5m window this many seconds before it opens.
+PRE_DISCOVERY_LEAD_S = 60.0
+# A quote older than this cannot open a position.
+STALE_PRICE_MAX_AGE_S = 5.0
+# Exits are allowed a longer staleness window; refusing to exit is worse
+# than exiting on a slightly old quote.
+EXIT_STALE_PRICE_MAX_AGE_S = 15.0
+REQUEST_TIMEOUT_S = 5.0
+
+[EXECUTION]
+# Paper is the safe default.  Live requires PAPER_TRADING=false AND
+# LIVE_ENABLED=true, plus credentials in .env.
+PAPER_TRADING = true
+LIVE_ENABLED = false
+
+# Fixed stake per trade (doc: 10 U per trade).
+STAKE_USD = 10.0
+
+# Official Polymarket taker fee for the crypto category:
+#   fee = shares * rate * p * (1 - p)
+# Makers pay 0.  The doc's backtest excludes fees; keep this at 0.07 for
+# realistic paper PnL, or set 0 to reproduce the doc's gross numbers.
+TAKER_FEE_RATE = 0.07
+INCLUDE_FEES = true
+
+# Retry cadence when a FAK order returns no fill.
+ENTRY_RETRY_S = 1.0
+EXIT_RETRY_S = 1.0
+# Forced-exit sell limit as a fraction below the current bid (2% = 2.0).
+SLIPPAGE_PCT = 2.0
+
+# Optional microstructure filter: skip an entry when (ask-bid)/mid exceeds
+# this.  0 disables the filter (doc parity).
+MAX_SPREAD_ABS = 0.0
+
+# Optional risk limits.  0 disables.
+MAX_DAILY_LOSS_USD = 0.0
+# A file whose presence pauses NEW entries (exits still run).
+KILL_SWITCH_FILE = "data/STOP"
+PAUSE_NEW_ENTRIES = false
+# Sell open positions on a graceful shutdown (best effort).
+FLATTEN_ON_EXIT = false
+
+# If true, skip asset/side configs whose TP target does not cover the
+# round-trip taker fee.  Off by default so the doc parameters run as written;
+# the startup fee report always warns about them.
+SKIP_FEE_NEGATIVE = false
+
+[WEB]
+# In-process FastAPI backend: dashboard + JSON API on port 8033.
+ENABLED = true
+HOST = "0.0.0.0"
+PORT = 8033
+# Set WEB_PASSWORD in .env to enable HTTP Basic auth.  Empty = open access.
+USERNAME = "admin"
+PASSWORD = ""
+LOG_LEVEL = "warning"
+# Comma-separated origins, or "*" for any frontend origin.
+CORS_ORIGINS = "*"
+
+[STORAGE]
+DATA_DIR = "data"
+
+[LOG]
+LEVEL = "INFO"
+
+# ---------------------------------------------------------------------------
+# Per-asset production parameters (docs/all_5m_strategy1_summary.md §2)
+#
+# SIDES: "UP", "DOWN" or "BOTH" (two independent positions per window).
+# ENTRY_THRESH: first-touch threshold in the 0–60 s window.
+# TP_PCT: take-profit fraction above the actual fill price.
+#
+# The doc's cross-asset conclusion is DOWN-only for six assets and UP-only
+# for XRP.  HYPE works on both sides (doc §3.3) but its §2 production top-1
+# is DOWN; switch SIDES to "BOTH" to run both.
+# ---------------------------------------------------------------------------
+
+[ASSETS.BTC]
+ENABLED = true  # 默认只启用 BTC；其余币可通过 Web 配置页开启
+SIDES = "DOWN"
+ENTRY_THRESH = 0.25
+TP_PCT = 0.10
+
+[ASSETS.ETH]
+ENABLED = false
+# ETH comes from the older both-sides report; 0.18 is the reported sweet spot.
+SIDES = "DOWN"
+ENTRY_THRESH = 0.18
+TP_PCT = 0.15
+
+[ASSETS.BNB]
+ENABLED = false
+SIDES = "DOWN"
+ENTRY_THRESH = 0.15
+TP_PCT = 0.10
+
+[ASSETS.SOL]
+ENABLED = false
+SIDES = "DOWN"
+ENTRY_THRESH = 0.15
+TP_PCT = 0.20
+
+[ASSETS.DOGE]
+ENABLED = false
+SIDES = "DOWN"
+ENTRY_THRESH = 0.15
+TP_PCT = 0.25
+
+[ASSETS.XRP]
+ENABLED = false
+# The only UP-advantage asset in the doc (§4.3).  Do not flip this to DOWN
+# without re-backtesting: XRP's DOWN side is structurally negative.
+SIDES = "UP"
+ENTRY_THRESH = 0.10
+TP_PCT = 0.25
+
+[ASSETS.HYPE]
+ENABLED = false
+# Doc §2 production: DOWN slightly better.  §3.3: both sides are strong.
+SIDES = "DOWN"
+ENTRY_THRESH = 0.30
+TP_PCT = 0.10

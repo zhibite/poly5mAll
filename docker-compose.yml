@@ -1,0 +1,21 @@
+services:
+  poly5m:
+    build: .
+    container_name: poly5m-all
+    restart: unless-stopped
+    ports:
+      - "8033:8033"
+    env_file:
+      - .env
+    environment:
+      # Only the container path; trading mode comes from .env so the same
+      # compose file works for paper and live.
+      - DATA_DIR=/app/data
+    volumes:
+      - ./data:/app/data
+      - ./config.toml:/app/config.toml:ro
+    logging:
+      driver: json-file
+      options:
+        max-size: "20m"
+        max-file: "5"
