@@ -29,6 +29,24 @@ t > 295 s            仍未卖出 -> 标记 SETTLE_PENDING，按 Gamma 结算价
 - 未止盈的仓位在 240s 起每秒重试强平，直到 295s。
 - HYPE 可配置 `SIDES="BOTH"`，UP/DOWN 各跑一笔；默认按文档 §2 只跑 DOWN。
 
+### 观察价止盈（默认）
+
+实盘/纸面默认 **`TP_EXECUTION_MODE=observed`**：
+
+1. 触发：可成交 bid（无 BBO 时用 mid）≥ `target = fill_price × (1 + TP)`；
+2. 执行：FAK 卖出，限价 = `floor(target)`；
+3. 成交价 = 当时订单簿的最优 bid。若价格从 0.27 跳到 0.42，就按 **0.42**
+   成交，而不是按 0.275 挂限价成交。
+
+`data/trades.jsonl` 里 `tp_price` 是目标价、`exit_price` 是实际观察成交价，
+可以直接核对。文档 [观察止盈](docs/观察止盈.md) 说明了 target 限价与观察价
+的差异；本项目**不实现**“挂 target 限价（A）”，因为回测里 target 口径远差于
+observed。
+
+可选 `TP_EXECUTION_MODE=market` 是文档里的做法 B：mid 穿越 target 后发
+可成交 FAK（限价在 bid 下方 2%），能吃到越价，但 bid 没跟上时也可能**低于
+target 成交**。默认不用。
+
 ## 2. 文档生产参数（`config.toml`）
 
 | 品种 | 方向 | entry | tp% | 文档依据 |
@@ -202,7 +220,7 @@ src/
   web/config_page.py        7 币策略配置页面
   web/stats.py              交易统计（PnL/胜率/盈亏比/回撤/分币种/按日）
   main.py                   CLI 入口
-tests/                      44 个离线测试（策略、paper 撮合、状态机、配置、FAK 解析、Web API/登录）
+tests/                      46 个离线测试（策略、paper 撮合、状态机、配置、FAK 解析、Web API/登录、观察价止盈）
 docs/strategy_5m_all.md     详细设计与口径
 ```
 
@@ -245,6 +263,7 @@ docs/strategy_5m_all.md     详细设计与口径
 | `KILL_SWITCH_FILE` | `data/STOP` | 文件存在即暂停新开仓 |
 | `MAX_SPREAD_ABS` | 0（关闭） | 点差超过该值时跳过入场 |
 | `SKIP_FEE_NEGATIVE` | false | 跳过 TP 费后为负的方向 |
+| `TP_EXECUTION_MODE` | observed | observed=按最优 bid 观察价成交；market=mid 触发后市价追价，可能低于 target |
 | `FLATTEN_ON_EXIT` | false | 优雅退出时尽力卖出未平仓仓位 |
 | `/api/pause` / 页面按钮 | — | 运行时暂停新开仓；已有仓位照常管理 |
 | `/config` 启用开关 | 仅 BTC | 关闭某币只停新开仓，不影响已有仓位离场 |
@@ -259,7 +278,7 @@ docs/strategy_5m_all.md     详细设计与口径
 
 ```bash
 python -m pytest -q
-# 44 passed
+# 46 passed
 ```
 
 测试覆盖：文档参数加载/校验、费用公式与 breakeven、入场只在 0–60s、

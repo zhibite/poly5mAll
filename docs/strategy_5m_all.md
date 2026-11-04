@@ -87,7 +87,7 @@ else:
 > 定义“触及”；实盘必须按可成交的 ask 成交。若 mid 已到阈值但 ask 仍在
 > 阈值上方，FAK 不会成交，下一 tick 重试。
 
-### 3.2 止盈条件
+### 3.2 止盈条件（观察价止盈，默认）
 
 同时满足：
 
@@ -95,16 +95,36 @@ else:
 - `60 <= t < 240`；
 - 距上次尝试 >= `EXIT_RETRY_S`；
 - 有报价且年龄 <= `EXIT_STALE_PRICE_MAX_AGE_S`；
-- 可成交价（优先 bid，缺失时用 mid）>= `position.tp_price`。
+- `TP_EXECUTION_MODE=observed`（默认）：可成交 bid（缺失时用 mid）
+  >= `position.tp_price`。
 
 卖出执行：
 
 - 限价：`floor_tick(tp_price, 0.01)`（卖单限价是“最低可接受价”，
   向下取整保证成交优先；实际成交价由 bid 决定，触发时 bid 已 >= target）；
 - paper：按 bid 阶梯卖出全部剩余份额；
-- live：`FAK SELL`，amount = 剩余份额，price = 限价。
+- live：`FAK SELL`，amount = 剩余份额，price = 限价；
+- 成交价是**观察到的实际 bid**：如果价格从 0.27 跳到 0.42，FAK 会按 0.42
+  成交，而不是按 target 0.275 挂限价。
 
 `tp_price = 实际成交均价 * (1 + TP_PCT)`，不是文档的 entry_thresh。
+
+#### 观察价 vs target 限价
+
+| 模式 | 触发 | 成交价 | 本项目 |
+|---|---|---|---|
+| observed（默认） | bid/mid 穿越 target | 当时最优 bid，可能高于 target | ✅ |
+| target（回测 target 口径） | 挂单在 target | 恰好 target | ❌ 不实现 |
+| market（文档做法 B） | mid 穿越 target | 可成交 FAK，可能低于 target | 可选 `TP_EXECUTION_MODE=market` |
+
+回测里 `exit_price = t.price`（穿越时观察价）对应 observed；`target` 口径
+假设恰好按 target 成交。`btc_staged` / `btc_6m_lead_tp_target` 的对比显示
+target 口径显著更差，因此 live 默认 observed。`trades.jsonl` 的
+`tp_price` 是目标、`exit_price` 是实际观察成交价，可直接核对。
+
+> 实盘限制：观察价是 **bid**，不是 last/mid。如果 last 跳到 0.42 但 bid 只有
+> 0.30，只能按 0.30 成交；点差、滑点、薄盘口和 240s 强平仍可能吃掉 edge。
+> 详见 [观察止盈](观察止盈.md)。
 
 ### 3.3 240s 强平
 
@@ -376,17 +396,18 @@ FastAPI + uvicorn 跑在策略的同一个事件循环里，端口 **8033**
 
 ## 12. 测试矩阵
 
-`python -m pytest -q`（44 个测试）：
+`python -m pytest -q`（46 个测试）：
 
 - `test_config.py`：文档默认参数、非法阈值、费后为负识别；
-- `test_strategy.py`：0–60s 入场、60s 后 TP、bid 触发、240s 强平、
-  部分成交、结算、stale quote；
+- `test_strategy.py`：0–60s 入场、60s 后 TP、bid 触发、observed/market
+  两种触发、240s 强平、部分成交、结算、stale quote；
 - `test_paper_broker.py`：ask/bid 阶梯、限价约束、WS 兜底；
 - `test_market_ws.py`：BBO / REST midpoint / 过期报价的优先级；
 - `test_market_service.py`：当前/下一窗口发现、边界推进、预发现；
 - `test_state.py`：state 原子读写、trade JSONL；
 - `test_runner.py`：AssetRunner 端到端“入场 → TP”、“入场 → 240s 强平”，
-  以及重启后过期仓位的 Gamma 结算记账；
+  观察价跳空成交（target 0.264、实际 0.42），以及重启后过期仓位的
+  Gamma 结算记账；
 - `test_clob_parse.py`：FAK 买卖回报的 taking/making、base units 归一、
   fills 兜底解析；
 - `test_runtime_config.py`：默认仅 BTC、启用/参数覆盖、持久化/重载、重置、非法值；

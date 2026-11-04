@@ -37,6 +37,11 @@ _BODY = r"""
     <div class="stat-sub">未单独覆盖的币使用此值</div>
   </div>
   <div class="stat-card">
+    <div class="stat-label">止盈模式</div>
+    <div class="stat-value purple" id="tp-mode">--</div>
+    <div class="stat-sub">observed = 按最优 bid 观察价成交</div>
+  </div>
+  <div class="stat-card">
     <div class="stat-label">新开仓</div>
     <div class="stat-value" id="entries">--</div>
     <div class="stat-sub">暂停/风控状态</div>
@@ -100,6 +105,7 @@ function render() {
   $('mode').textContent = cfg.mode === 'live' ? '实盘' : '纸面';
   $('mode').className = 'stat-value ' + (cfg.mode === 'live' ? 'red' : 'green');
   $('fee-rate').textContent = fmt(cfg.taker_fee_rate, 4);
+  $('tp-mode').textContent = cfg.tp_execution_mode || 'observed';
   $('global-stake').textContent = fmt(cfg.stake_usd, 0) + ' U';
   const enabled = (cfg.assets || []).filter((a) => a.enabled).length;
   $('enabled-count').textContent = enabled + ' / ' + (cfg.assets || []).length;

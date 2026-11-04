@@ -90,6 +90,17 @@ def test_tp_waits_until_60s_and_uses_bid():
     assert not side.tp_due(T0 + 70, wide, g, e, f)
 
 
+def test_tp_trigger_modes():
+    side = SideRuntime(_plan(), _window())
+    g, e, f = GeneralConfig(), ExecutionConfig(), FeedConfig()
+    fill = Fill("down-token", "BUY", 40.0, 10.0, 0.25, 0.0, T0 + 10)
+    side.on_entry_fill(fill, T0 + 10, e)
+    # Mid is above target, but the executable bid is still below it.
+    quote = _quote(T0 + 70, 0.276, bid=0.20, ask=0.35)
+    assert not side.tp_due(T0 + 70, quote, g, e, f, mode="observed")
+    assert side.tp_due(T0 + 70, quote, g, e, f, mode="market")
+
+
 def test_force_exit_after_240s():
     side = SideRuntime(_plan(), _window())
     g, e, f = GeneralConfig(), ExecutionConfig(), FeedConfig()

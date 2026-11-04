@@ -286,6 +286,7 @@ def create_app(
             "stake_usd": e.stake_usd,
             "taker_fee_rate": e.taker_fee_rate,
             "include_fees": e.include_fees,
+            "tp_execution_mode": e.tp_execution_mode,
             "skip_fee_negative": e.skip_fee_negative,
             "max_daily_loss_usd": e.max_daily_loss_usd,
             "timing": {

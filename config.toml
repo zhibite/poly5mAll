@@ -53,6 +53,13 @@ STAKE_USD = 10.0
 TAKER_FEE_RATE = 0.07
 INCLUDE_FEES = true
 
+# Take-profit execution:
+#   observed = trigger on executable bid >= target, FAK sell at target floor;
+#              the fill is the best bid (captures a gap above target).
+#   market   = trigger on observed mid >= target, marketable FAK below the
+#              bid (doc's option B); can fill below target.
+TP_EXECUTION_MODE = "observed"
+
 # Retry cadence when a FAK order returns no fill.
 ENTRY_RETRY_S = 1.0
 EXIT_RETRY_S = 1.0

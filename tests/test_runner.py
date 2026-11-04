@@ -140,6 +140,46 @@ async def test_broker_exception_resets_entry_state(tmp_path):
     assert runner.sides[0].status.value == "waiting"
 
 
+class GapBroker(FakeBroker):
+    """Sell fill at the observed gapped bid (0.42), not at the target."""
+
+    async def sell(self, token_id, shares, limit_price, tick_size):
+        self.sells.append((token_id, shares, limit_price))
+        price = 0.42
+        return Fill(
+            token_id, "SELL", shares, shares * price, price, 0.05, T0 + 70
+        )
+
+
+@pytest.mark.asyncio
+async def test_take_profit_fills_at_observed_gap(tmp_path):
+    settings = _settings()
+    cache = PriceCache()
+    cache.set_best_bid_ask("down-token", 0.23, 0.24, ts=T0 + 10)
+    broker = GapBroker()
+    trades = []
+    runner = AssetRunner(
+        settings.assets[0],
+        settings,
+        broker,
+        cache,
+        FakeMarketService(_window()),
+        StateStore(tmp_path),
+        can_enter=lambda: (True, "ok"),
+        on_trade=trades.append,
+        on_state_change=lambda: None,
+    )
+    await runner.tick(T0 + 10)  # entry ~0.24, target ~0.264
+    cache.set_best_bid_ask("down-token", 0.42, 0.43, ts=T0 + 70)
+    await runner.tick(T0 + 70)
+    assert len(trades) == 1
+    assert trades[0].reason == "tp"
+    assert trades[0].tp_price == pytest.approx(0.264)
+    # The fill is the observed executable price, not the target.
+    assert trades[0].exit_price == pytest.approx(0.42)
+    assert trades[0].pnl_gross > 1.0
+
+
 @pytest.mark.asyncio
 async def test_no_entry_after_60s(tmp_path):
     settings = _settings()

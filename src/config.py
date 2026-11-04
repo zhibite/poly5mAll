@@ -149,6 +149,12 @@ class ExecutionConfig:
     stake_usd: float = 10.0
     taker_fee_rate: float = 0.07
     include_fees: bool = True
+    # "observed": trigger on executable bid >= target; FAK sell at target
+    #             floor, so the fill is the best bid (captures gaps above
+    #             target, never below target).
+    # "market":   trigger on observed mid >= target; marketable FAK below
+    #             the bid (doc's option B).  Can fill below target.
+    tp_execution_mode: str = "observed"
     entry_retry_s: float = 1.0
     exit_retry_s: float = 1.0
     slippage_pct: float = 2.0
@@ -388,6 +394,11 @@ def load_settings(config_path: str | Path | None = None) -> Settings:
         include_fees=_env_bool(
             "INCLUDE_FEES", _as_bool(_get(exec_raw, "INCLUDE_FEES", True), True)
         ),
+        tp_execution_mode=_env(
+            "TP_EXECUTION_MODE",
+            str(_get(exec_raw, "TP_EXECUTION_MODE", "observed")),
+        ).lower()
+        or "observed",
         entry_retry_s=_as_float(_get(exec_raw, "ENTRY_RETRY_S", 1.0), 1.0),
         exit_retry_s=_as_float(_get(exec_raw, "EXIT_RETRY_S", 1.0), 1.0),
         slippage_pct=_as_float(_get(exec_raw, "SLIPPAGE_PCT", 2.0), 2.0),
@@ -623,6 +634,11 @@ def validate_settings(settings: Settings) -> None:
         raise ConfigError("retry intervals must be > 0")
     if e.slippage_pct < 0:
         raise ConfigError("SLIPPAGE_PCT must be >= 0")
+    if e.tp_execution_mode not in ("observed", "market"):
+        raise ConfigError(
+            "TP_EXECUTION_MODE must be 'observed' or 'market', got "
+            f"{e.tp_execution_mode!r}"
+        )
     if e.max_spread_abs < 0:
         raise ConfigError("MAX_SPREAD_ABS must be >= 0")
 

@@ -272,6 +272,7 @@ class AssetRunner:
             self.settings.general,
             self.settings.execution,
             self.settings.feed,
+            mode=self.settings.execution.tp_execution_mode,
         ):
             await self._exit(side, now, quote, reason="tp")
             return
@@ -374,10 +375,18 @@ class AssetRunner:
         side.last_exit_attempt = now
 
         if reason == "tp":
-            limit = max(
-                self.window.tick_size,
-                floor_tick(pos.tp_price, self.window.tick_size),
-            )
+            if self.settings.execution.tp_execution_mode == "market":
+                # Doc's option B: cross the book at market after the
+                # observed mid crosses the target.  This can fill below
+                # the target if the bid has not caught up.
+                limit = self._force_exit_limit(quote, self.window.tick_size)
+            else:
+                # Observed fill with a target floor: only fill at bids at
+                # or above the target; a gap to 0.42 fills at 0.42.
+                limit = max(
+                    self.window.tick_size,
+                    floor_tick(pos.tp_price, self.window.tick_size),
+                )
         else:
             limit = self._force_exit_limit(quote, self.window.tick_size)
 
@@ -397,11 +406,16 @@ class AssetRunner:
             fill, now, reason, self.settings.execution, self.settings.mode
         )
         log.info(
-            "[{}] EXIT {} {} reason={} shares={:.4f} px={:.4f} usdc={:.4f}",
+            "[{}] EXIT {} {} reason={} mode={} tp_target={:.4f} "
+            "shares={:.4f} px={:.4f} usdc={:.4f}",
             self.asset,
             side.plan.side.value,
             pos.position_id,
             reason,
+            self.settings.execution.tp_execution_mode
+            if reason == "tp"
+            else "-",
+            pos.tp_price,
             fill.shares,
             fill.price,
             fill.usdc,

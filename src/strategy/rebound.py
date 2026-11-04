@@ -93,6 +93,7 @@ class SideRuntime:
         general: GeneralConfig,
         execution: ExecutionConfig,
         feed: FeedConfig,
+        mode: str = "observed",
     ) -> bool:
         if self.status is not SideStatus.HOLDING or self.position is None:
             return False
@@ -103,9 +104,15 @@ class SideRuntime:
             return False
         if quote is None or quote.age(now) > feed.exit_stale_price_max_age_s:
             return False
-        # Prefer the executable bid; fall back to mid when the book is not
-        # in the WS cache (the REST book is fetched at execution time).
-        trigger = quote.bid if quote.bid > 0 else quote.mid
+        if mode == "market":
+            # Backtest-style observed signal: the mid/last series crosses
+            # the target, then the executor crosses the book at market.
+            trigger = quote.mid
+        else:
+            # Executable observed fill: only trigger when the best bid is
+            # already at/above the target.  The actual fill is that bid
+            # (which may be above the target).
+            trigger = quote.bid if quote.bid > 0 else quote.mid
         return trigger >= self.position.tp_price
 
     # ── forced exit ────────────────────────────────────────────────────
