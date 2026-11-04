@@ -28,7 +28,7 @@ nav .nav-user { color:#9ca3af; }
 @keyframes pulse { 0%,100%{opacity:1} 50%{opacity:.4} }
 .container { max-width:1200px; margin:0 auto; padding:24px; }
 
-.stats-row { display:grid; grid-template-columns:repeat(auto-fit,minmax(190px,1fr));
+.stats-row { display:grid; grid-template-columns:repeat(5,minmax(0,1fr));
              gap:16px; margin-bottom:24px; }
 .stat-card { background:#12122a; border:1px solid #1e1e3a; border-radius:10px;
              padding:20px; }
@@ -112,6 +112,31 @@ input[type="checkbox"] { width:18px; height:18px; accent-color:#7c3aed; }
 .msg.green { color:#10b981; } .msg.red { color:#ef4444; }
 .msg.orange { color:#fb923c; }
 
+/* ── Strategy timeline ──────────────────────────────────────────────── */
+.timeline-bar { display:flex; height:34px; border-radius:8px; overflow:hidden;
+                border:1px solid #2a2a4a; background:#0a0a14; }
+.timeline-seg { display:flex; align-items:center; justify-content:center;
+                min-width:0; overflow:hidden; white-space:nowrap;
+                font-size:11px; font-weight:600; color:#fff; }
+.seg-entry { background:linear-gradient(90deg,#6d28d9,#7c3aed); }
+.seg-tp { background:linear-gradient(90deg,#047857,#10b981); }
+.seg-sl { background:linear-gradient(90deg,#b45309,#f59e0b); }
+.seg-settle { background:#374151; }
+.timeline-labels { display:flex; justify-content:space-between;
+                   font-size:11px; color:#4b5563; margin-top:5px;
+                   font-variant-numeric:tabular-nums; }
+.timing-grid { display:grid; grid-template-columns:repeat(auto-fit,minmax(210px,1fr));
+               gap:12px; margin-top:14px; }
+.timing-card { background:#0a0a14; border:1px solid #1e1e3a;
+               border-left:3px solid #7c3aed; border-radius:8px; padding:12px 14px; }
+.timing-card.tp { border-left-color:#10b981; }
+.timing-card.sl { border-left-color:#f59e0b; }
+.timing-card.settle { border-left-color:#4b5563; }
+.timing-card .t-label { font-size:12px; color:#9ca3af; font-weight:600; }
+.timing-card .t-time { font-size:18px; font-weight:700; margin:3px 0 4px;
+                       font-variant-numeric:tabular-nums; }
+.timing-card .t-desc { font-size:11px; color:#6b7280; line-height:1.5; }
+
 /* ── Config cards ───────────────────────────────────────────────────── */
 .config-grid { display:grid; grid-template-columns:repeat(auto-fit,minmax(300px,1fr));
                gap:16px; margin-bottom:18px; }
@@ -182,10 +207,12 @@ footer { text-align:center; color:#4b5563; font-size:12px; padding:20px 0 40px; 
   nav .brand { margin-right:4px; font-size:15px; }
   nav a { padding:6px 9px; font-size:13px; }
   nav .nav-right { margin-left:auto; gap:6px; font-size:11px; }
-  .stats-row { gap:10px; margin-bottom:16px; }
+  .stats-row { grid-template-columns:repeat(2,minmax(0,1fr));
+               gap:10px; margin-bottom:16px; }
   .stat-card { padding:14px; }
   .stat-value { font-size:21px; }
   .stat-label { font-size:10px; }
+  .timeline-seg { font-size:0; }
   .section { padding:14px; margin-bottom:16px; }
   table { font-size:12px; }
   th { font-size:10px; padding:7px 8px; }

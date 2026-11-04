@@ -37,11 +37,6 @@ _BODY = r"""
     <div class="stat-sub" id="pf-sub">--</div>
   </div>
   <div class="stat-card">
-    <div class="stat-label">累计手续费</div>
-    <div class="stat-value red" id="fees">--</div>
-    <div class="stat-sub">taker 0.07 · net 已扣</div>
-  </div>
-  <div class="stat-card">
     <div class="stat-label">新开仓</div>
     <div class="stat-value" id="entries">--</div>
     <div class="stat-sub" id="entries-sub">--</div>
@@ -165,7 +160,6 @@ function renderStats(stats) {
   $('profit-factor').textContent = a.profit_factor === null
     ? (a.wins ? '∞' : '--') : fmt(a.profit_factor, 2);
   $('pf-sub').textContent = `均赢 ${money(a.avg_win, 2)} · 均亏 ${money(a.avg_loss, 2)}`;
-  $('fees').textContent = fmt(a.fees, 2) + ' U';
 }
 
 async function refresh() {

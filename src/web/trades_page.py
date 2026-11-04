@@ -34,11 +34,6 @@ _BODY = r"""
     <div class="stat-sub" id="pf-sub">--</div>
   </div>
   <div class="stat-card">
-    <div class="stat-label">累计手续费</div>
-    <div class="stat-value red" id="fees">--</div>
-    <div class="stat-sub">entry + exit</div>
-  </div>
-  <div class="stat-card">
     <div class="stat-label">最大回撤</div>
     <div class="stat-value red" id="max-dd">--</div>
     <div class="stat-sub">按平仓顺序</div>
@@ -154,13 +149,12 @@ function renderStats(stats) {
   $('today-sub').textContent = `${t.trades || 0} 笔 · ${t.wins || 0} 胜 / ${t.losses || 0} 负`;
   $('total-pnl').textContent = money(a.net, 4);
   $('total-pnl').className = 'stat-value ' + cls(a.net);
-  $('total-sub').textContent = `${a.trades || 0} 笔 · 毛 ${fmt(a.gross, 2)}`;
+  $('total-sub').textContent = `${a.trades || 0} 笔 · 毛 ${fmt(a.gross, 2)} / 费 ${fmt(a.fees, 2)}`;
   $('win-rate').textContent = pct(a.win_rate);
   $('win-sub').textContent = `${a.wins || 0} 胜 / ${a.losses || 0} 负`;
   $('profit-factor').textContent = a.profit_factor === null
     ? (a.wins ? '∞' : '--') : fmt(a.profit_factor, 2);
   $('pf-sub').textContent = `均赢 ${money(a.avg_win, 2)} · 均亏 ${money(a.avg_loss, 2)}`;
-  $('fees').textContent = fmt(a.fees, 2) + ' U';
   $('max-dd').textContent = fmt(a.max_drawdown, 2) + ' U';
 
   const byAsset = Object.entries(stats.by_asset || {});

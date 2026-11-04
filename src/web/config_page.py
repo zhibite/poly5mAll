@@ -37,11 +37,6 @@ _BODY = r"""
     <div class="stat-sub">未单独覆盖的币使用此值</div>
   </div>
   <div class="stat-card">
-    <div class="stat-label">止盈模式</div>
-    <div class="stat-value purple" id="tp-mode">--</div>
-    <div class="stat-sub">observed = 按最优 bid 观察价成交</div>
-  </div>
-  <div class="stat-card">
     <div class="stat-label">新开仓</div>
     <div class="stat-value" id="entries">--</div>
     <div class="stat-sub">暂停/风控状态</div>
@@ -55,6 +50,19 @@ _BODY = r"""
   <b>下一个 5m 窗口</b> 生效。已有仓位始终按原参数止盈/240s 强平，不受关闭影响。
   密钥、端口、费率不在本页，需改 <span class="mono">.env</span> /
   <span class="mono">config.toml</span>。
+</div>
+
+<div class="section">
+  <h2>5 分钟市场时间轴 <span class="pill blue" id="tp-mode-pill">observed</span></h2>
+  <div class="timeline-bar" id="timeline-bar"></div>
+  <div class="timing-grid" id="timing-grid">
+    <div class="no-data">加载中...</div>
+  </div>
+  <div class="alert info" style="margin:14px 0 0">
+    止盈公式：<span class="mono">target = 实际成交价 × (1 + TP%)</span>。
+    默认 <span class="mono">observed</span>：触发后 FAK 卖出，成交价取当时最优
+    bid，不是挂 target 限价；价格跳到更高会按观察价成交。
+  </div>
 </div>
 
 <div class="config-grid" id="cards">
@@ -98,6 +106,57 @@ function feeCell(a) {
   }).join('');
 }
 
+function renderTiming(cfg) {
+  const t = cfg.timing || {};
+  const total = Number(t.window_sec || 300);
+  const entry = Number(t.entry_window_end_s || 60);
+  const tpStart = Number(t.tp_window_start_s || 60);
+  const force = Number(t.force_exit_s || 240);
+  const deadline = Number(t.force_exit_deadline_s || 295);
+  const mode = cfg.tp_execution_mode || 'observed';
+
+  const segs = [
+    {label: '入场', dur: entry, cls: 'seg-entry',
+     title: `0–${entry}s：观察，首次价格 ≤ entry 买入`},
+    {label: '止盈', dur: Math.max(1, force - tpStart), cls: 'seg-tp',
+     title: `${tpStart}–${force}s：价格 ≥ 成交价×(1+TP%) 卖出`},
+    {label: '强平', dur: Math.max(1, deadline - force), cls: 'seg-sl',
+     title: `${force}–${deadline}s：未止盈则 FAK 市价卖出，每秒重试`},
+    {label: '结算', dur: Math.max(1, total - deadline), cls: 'seg-settle',
+     title: `${deadline}–${total}s：未卖出则按 Gamma 0/1 结算`},
+  ];
+  $('timeline-bar').innerHTML = segs.map((s) => `<div
+      class="timeline-seg ${s.cls}" style="flex:${s.dur}"
+      title="${escapeHtml(s.title)}">${escapeHtml(s.label)}</div>`).join('');
+  $('tp-mode-pill').textContent = mode;
+
+  $('timing-grid').innerHTML = `
+    <div class="timing-card">
+      <div class="t-label">入场观察</div>
+      <div class="t-time">0–${entry}s</div>
+      <div class="t-desc">5 分钟市场开始后观察；该方向价格首次
+        ≤ entry 时买入。每方向每窗口最多一笔。</div>
+    </div>
+    <div class="timing-card tp">
+      <div class="t-label">止盈窗口</div>
+      <div class="t-time">${tpStart}–${force}s</div>
+      <div class="t-desc">价格 ≥ 实际成交价 × (1 + TP%) 时卖出；
+        默认 observed，按当时最优 bid 成交。</div>
+    </div>
+    <div class="timing-card sl">
+      <div class="t-label">时间止损 / 强平</div>
+      <div class="t-time">${force}–${deadline}s</div>
+      <div class="t-desc">到 ${force}s 仍未止盈，FAK 市价卖出并每秒重试；
+        这是时间止损，不是价格止损。</div>
+    </div>
+    <div class="timing-card settle">
+      <div class="t-label">结算</div>
+      <div class="t-time">${deadline}–${total}s</div>
+      <div class="t-desc">${deadline}s 仍无法卖出 → SETTLE_PENDING，
+        窗口结束后按 Gamma 0/1 结算价记账。</div>
+    </div>`;
+}
+
 function render() {
   const cfg = DATA;
   $('version').textContent = 'v' + (cfg.version ?? 0);
@@ -105,12 +164,12 @@ function render() {
   $('mode').textContent = cfg.mode === 'live' ? '实盘' : '纸面';
   $('mode').className = 'stat-value ' + (cfg.mode === 'live' ? 'red' : 'green');
   $('fee-rate').textContent = fmt(cfg.taker_fee_rate, 4);
-  $('tp-mode').textContent = cfg.tp_execution_mode || 'observed';
   $('global-stake').textContent = fmt(cfg.stake_usd, 0) + ' U';
   const enabled = (cfg.assets || []).filter((a) => a.enabled).length;
   $('enabled-count').textContent = enabled + ' / ' + (cfg.assets || []).length;
   $('entries').textContent = cfg.paused ? '已暂停' : '允许';
   $('entries').className = 'stat-value ' + (cfg.paused ? 'red' : 'green');
+  renderTiming(cfg);
 
   if (cfg.web && !cfg.web.auth) {
     $('auth-alert').innerHTML =
