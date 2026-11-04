@@ -12,3 +12,6 @@ recheck_results/
 
 # Research/backtest data is kept out of the deployed repo.
 backtest/
+
+# Local documentation is intentionally not committed.
+docs/
