@@ -19,7 +19,8 @@ best bid/ask 与 last trade、CLOB `/midpoint` 每 2 秒作为稳定兜底。
 t = 0                5m 市场开始（slug = {asset}-updown-5m-{epoch}）
 0 <= t <= 60 s       观察；该方向价格首次 <= ENTRY_THRESH -> 买入
 60 <= t < 240 s      止盈：价格 >= 实际成交价 * (1 + TP_PCT)
-                     止损：观察价 <= 实际成交价 * (1 - STOP_LOSS_PCT)，默认 20%
+                     止损：观察价 <= 实际成交价 * (1 - STOP_LOSS_PCT)
+                     （BTC 默认 20%，其他币默认 0=关闭）
 t >= 240 s           仍未止盈/止损 -> 以市价 FAK 强平（文档的“240s SL 单点判定”）
 t > 295 s            仍未卖出 -> 标记 SETTLE_PENDING，按 Gamma 结算价记账
 ```
@@ -48,7 +49,7 @@ observed。
 可成交 FAK（限价在 bid 下方 2%），能吃到越价，但 bid 没跟上时也可能**低于
 target 成交**。默认不用。
 
-### 价格止损（默认 20%，从 60s 开始）
+### 价格止损（BTC 20%，其他币默认关闭）
 
 - **0–60s 不设价格止损**：这段时间是观察窗口，回测显示提前止损会杀掉后续
   TP 赢单。
@@ -56,7 +57,8 @@ target 成交**。默认不用。
   `mid <= 实际成交价 × (1 - STOP_LOSS_PCT)` 时触发。
 - 执行：可成交 FAK 卖出（限价在 bid 下方 2%），成交价取当时最优 bid；
   `reason="stop_loss"`。
-- 默认 `STOP_LOSS_PCT=0.20`；填 0 关闭。可在 `/config` 页按币调整。
+- 默认：**BTC `STOP_LOSS_PCT=0.20`，其他币 `0`（关闭）**；填 0 即不生效，
+  可在 `/config` 页按币调整。低入场价品种回测显示加止损更差，所以默认关闭。
 - 240s 后仍未退出则由时间强平接管，295s 后进入结算。
 
 回测报告 `docs/btc_5m_strategy1_recheck_2026-11-04.md` 显示：`0.25/10%`
@@ -76,8 +78,9 @@ target 成交**。默认不用。
 | HYPE | BOTH | 0.30 | 10% | §2 / §4.7 |
 
 单笔仓位默认 **2 U**（`EXECUTION.STAKE_USD=2.0`；文档回测用 10 U）；
-**所有币默认价格止损 20%**
-（`[EXECUTION] STOP_LOSS_PCT=0.20`，可在配置页按币覆盖，0=关闭）。
+**价格止损默认只给 BTC 开 20%**；其他低入场价品种默认 `0`（关闭）。
+全局 fallback 是 `[EXECUTION] STOP_LOSS_PCT=0`，BTC 在 `[ASSETS.BTC]`
+单独启用 20%；可在配置页按币调整。
 **默认只启用 BTC**（`[ASSETS.BTC] ENABLED=true`，其余为 false）；在
 `http://<host>:8033/config` 可以逐币开启/关闭并修改参数。
 
@@ -286,7 +289,7 @@ docs/strategy_5m_all.md     详细设计与口径
 | `MAX_SPREAD_ABS` | 0（关闭） | 点差超过该值时跳过入场 |
 | `SKIP_FEE_NEGATIVE` | false | 跳过 TP 费后为负的方向 |
 | `TP_EXECUTION_MODE` | observed | observed=按最优 bid 观察价成交；market=mid 触发后市价追价，可能低于 target |
-| `STOP_LOSS_PCT` | 0.20 | 60s 后的价格止损（entry×(1-SL)）；0=关闭，可按币覆盖 |
+| `STOP_LOSS_PCT` | 0（全局）/ BTC 0.20 | 60s 后的价格止损（entry×(1-SL)）；0=关闭，可按币覆盖 |
 | `FLATTEN_ON_EXIT` | false | 优雅退出时尽力卖出未平仓仓位 |
 | `/api/pause` / 页面按钮 | — | 运行时暂停新开仓；已有仓位照常管理 |
 | `/config` 启用开关 | 仅 BTC | 关闭某币只停新开仓，不影响已有仓位离场 |

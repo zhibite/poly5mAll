@@ -128,12 +128,13 @@ target 口径显著更差，因此 live 默认 observed。`trades.jsonl` 的
 > 0.30，只能按 0.30 成交；点差、滑点、薄盘口和 240s 强平仍可能吃掉 edge。
 > 详见 [观察止盈](观察止盈.md)。
 
-### 3.3 价格止损（默认 20%，60s 后启用）
+### 3.3 价格止损（BTC 20%，其他币默认关闭）
 
 - 只在 `60 <= t < 240` 检查；0–60s 是观察窗口，不设价格止损。
 - 触发：观察价 `mid <= position.sl_price`，其中
   `sl_price = 实际成交价 × (1 - STOP_LOSS_PCT)`。
-- 默认 `STOP_LOSS_PCT=0.20`；0 表示关闭；可在 `/config` 页按币设置。
+- 默认：**BTC 20%**，其他币 **0（关闭）**；0 表示不生效，可在 `/config`
+  页按币设置。低入场价品种回测显示加止损更差，所以默认关闭。
 - 执行：可成交 FAK 卖出，限价在 bid 下方 `SLIPPAGE_PCT`（默认 2%），
   成交价取当时最优 bid；`reason="stop_loss"`。
 - `sl_price` 在入场时写入 `Position` / `state.json`，重启后沿用；旧仓位若
@@ -369,7 +370,7 @@ FastAPI + uvicorn 跑在策略的同一个事件循环里，端口 **8033**
 | `KILL_SWITCH_FILE` | 文件存在即停新开仓 |
 | `MAX_SPREAD_ABS` | 点差过滤（默认关闭） |
 | `SKIP_FEE_NEGATIVE` | 跳过 TP 费后为负的方向 |
-| `STOP_LOSS_PCT` | 60s 后价格止损，默认 0.20；0=关闭，可按币覆盖 |
+| `STOP_LOSS_PCT` | 60s 后价格止损；全局 0，BTC 0.20；0=关闭，可按币覆盖 |
 | `STALE_PRICE_MAX_AGE_S` | 报价太旧不开仓 |
 | `EXIT_STALE_PRICE_MAX_AGE_S` | 出场允许更旧的报价（不能因为数据旧就不止损） |
 | `FLATTEN_ON_EXIT` | 优雅退出时尽力平仓 |

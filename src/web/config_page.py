@@ -62,7 +62,7 @@ _BODY = r"""
     止盈公式：<span class="mono">target = 实际成交价 × (1 + TP%)</span>；
     价格止损：<span class="mono">sl = 实际成交价 × (1 − 止损%)</span>。
     默认 <span class="mono">observed</span>：触发后 FAK 卖出，成交价取当时最优
-    bid；价格止损默认 20%，只从 t=60s 开始检查。
+    bid；价格止损 BTC 默认 20%、其他币默认 0（关闭），只从 t=60s 开始检查。
   </div>
 </div>
 
@@ -135,7 +135,7 @@ function renderTiming(cfg) {
         默认 observed，按当时最优 bid 成交。</div>
     </div>
     <div class="timing-card sl-price">
-      <div class="t-label">价格止损（默认 20%）</div>
+      <div class="t-label">价格止损（BTC 20%，其他 0）</div>
       <div class="t-time">${tpStart}–${force}s</div>
       <div class="t-desc">观察价 ≤ 实际成交价 × (1 − 止损%) 时，
         按观察价市价卖出；0–60s 不设止损。</div>

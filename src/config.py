@@ -42,6 +42,18 @@ ASSET_DEFAULTS: dict[str, tuple[str, float, float]] = {
 # The doc's asset order, used when TRADE_ASSETS is not set.
 DEFAULT_ASSET_ORDER = ("BTC", "ETH", "BNB", "SOL", "DOGE", "XRP", "HYPE")
 
+# Backtests: BTC 0.25/10% benefits from a 20% price stop, while the low-entry
+# coins are hurt by it.  The global fallback is 0 (off); BTC enables 20%.
+ASSET_DEFAULT_STOP_LOSS: dict[str, float] = {
+    "BTC": 0.20,
+    "ETH": 0.0,
+    "BNB": 0.0,
+    "SOL": 0.0,
+    "DOGE": 0.0,
+    "XRP": 0.0,
+    "HYPE": 0.0,
+}
+
 
 class ConfigError(ValueError):
     """Invalid configuration."""
@@ -158,8 +170,8 @@ class ExecutionConfig:
     #             the bid (doc's option B).  Can fill below target.
     tp_execution_mode: str = "observed"
     # Price stop-loss after t=60s: exit when observed mid <= entry * (1-SL).
-    # 0 disables it.  The doc's backtest found -20% improves both PnL and DD.
-    stop_loss_pct: float = 0.20
+    # 0 disables it.  Global fallback is OFF; BTC enables 20% per asset.
+    stop_loss_pct: float = 0.0
     entry_retry_s: float = 1.0
     exit_retry_s: float = 1.0
     slippage_pct: float = 2.0
@@ -408,7 +420,7 @@ def load_settings(config_path: str | Path | None = None) -> Settings:
         or "observed",
         stop_loss_pct=_env_float(
             "STOP_LOSS_PCT",
-            _as_float(_get(exec_raw, "STOP_LOSS_PCT", 0.20), 0.20),
+            _as_float(_get(exec_raw, "STOP_LOSS_PCT", 0.0), 0.0),
         ),
         entry_retry_s=_as_float(_get(exec_raw, "ENTRY_RETRY_S", 1.0), 1.0),
         exit_retry_s=_as_float(_get(exec_raw, "EXIT_RETRY_S", 1.0), 1.0),
@@ -522,12 +534,12 @@ def _load_assets(
                 ) from exc
         if stake is not None:
             stake = float(stake)
+        sl_default = ASSET_DEFAULT_STOP_LOSS.get(
+            name, execution.stop_loss_pct
+        )
         sl = _env_float(
             f"{name}_STOP_LOSS_PCT",
-            _as_float(
-                _get(table, "STOP_LOSS_PCT", execution.stop_loss_pct),
-                execution.stop_loss_pct,
-            ),
+            _as_float(_get(table, "STOP_LOSS_PCT", sl_default), sl_default),
         )
         out.append(
             AssetConfig(

@@ -60,10 +60,10 @@ INCLUDE_FEES = true
 #              bid (doc's option B); can fill below target.
 TP_EXECUTION_MODE = "observed"
 
-# Price stop-loss, active from t=60s to 240s:
+# Global fallback for the price stop-loss (active only from 60s to 240s):
 #   observed mid <= entry_price * (1 - STOP_LOSS_PCT) -> marketable FAK sell.
-# 0 disables the price stop.  0–60s never stops out (observation window).
-STOP_LOSS_PCT = 0.20
+# 0 disables it.  BTC enables 20% per-asset below; low-entry coins keep 0.
+STOP_LOSS_PCT = 0.0
 
 # Retry cadence when a FAK order returns no fill.
 ENTRY_RETRY_S = 1.0
@@ -125,6 +125,8 @@ ENABLED = true  # 默认只启用 BTC；其余币可通过 Web 配置页开启
 SIDES = "BOTH"
 ENTRY_THRESH = 0.25
 TP_PCT = 0.10
+# Backtest: BTC 0.25/10% benefits from a 20% stop.
+STOP_LOSS_PCT = 0.20
 
 [ASSETS.ETH]
 ENABLED = false
@@ -132,24 +134,29 @@ ENABLED = false
 SIDES = "BOTH"
 ENTRY_THRESH = 0.18
 TP_PCT = 0.15
+# Low entry: the 20% stop tested worse; keep it off.
+STOP_LOSS_PCT = 0.0
 
 [ASSETS.BNB]
 ENABLED = false
 SIDES = "BOTH"
 ENTRY_THRESH = 0.15
 TP_PCT = 0.10
+STOP_LOSS_PCT = 0.0
 
 [ASSETS.SOL]
 ENABLED = false
 SIDES = "BOTH"
 ENTRY_THRESH = 0.15
 TP_PCT = 0.20
+STOP_LOSS_PCT = 0.0
 
 [ASSETS.DOGE]
 ENABLED = false
 SIDES = "BOTH"
 ENTRY_THRESH = 0.15
 TP_PCT = 0.25
+STOP_LOSS_PCT = 0.0
 
 [ASSETS.XRP]
 ENABLED = false
@@ -157,6 +164,7 @@ ENABLED = false
 SIDES = "BOTH"
 ENTRY_THRESH = 0.10
 TP_PCT = 0.25
+STOP_LOSS_PCT = 0.0
 
 [ASSETS.HYPE]
 ENABLED = false
@@ -164,3 +172,4 @@ ENABLED = false
 SIDES = "BOTH"
 ENTRY_THRESH = 0.30
 TP_PCT = 0.10
+STOP_LOSS_PCT = 0.0

@@ -20,6 +20,8 @@ def test_doc_defaults_load():
     assert by_name["XRP"].entry_thresh == pytest.approx(0.10)
     assert by_name["HYPE"].entry_thresh == pytest.approx(0.30)
     assert by_name["BTC"].stop_loss_pct == pytest.approx(0.20)
+    assert by_name["ETH"].stop_loss_pct == pytest.approx(0.0)
+    assert by_name["XRP"].stop_loss_pct == pytest.approx(0.0)
     # Default deployment only enables BTC; the Web config page turns others on.
     assert by_name["BTC"].enabled is True
     assert all(not by_name[n].enabled for n in by_name if n != "BTC")
@@ -31,9 +33,13 @@ def test_doc_defaults_load():
 
 
 def test_defaults_without_config_file(tmp_path):
-    # Even with no config.toml, the safe default is BTC-only.
+    # Even with no config.toml, the safe default is BTC-only, BTC SL 20%,
+    # and the low-entry coins have the price stop off.
     s = load_settings(tmp_path / "missing.toml")
     assert [a.asset for a in s.assets if a.enabled] == ["BTC"]
+    by_name = {a.asset: a for a in s.assets}
+    assert by_name["BTC"].stop_loss_pct == pytest.approx(0.20)
+    assert by_name["ETH"].stop_loss_pct == pytest.approx(0.0)
 
 
 def test_invalid_threshold_rejected():
