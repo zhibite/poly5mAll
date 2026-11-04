@@ -12,18 +12,18 @@ def test_doc_defaults_load():
     s = load_settings()
     by_name = {a.asset: a for a in s.assets}
     assert set(by_name) == {"BTC", "ETH", "BNB", "SOL", "DOGE", "XRP", "HYPE"}
-    assert by_name["BTC"].sides == (Side.DOWN,)
+    assert by_name["BTC"].sides == (Side.UP, Side.DOWN)
     assert by_name["BTC"].entry_thresh == pytest.approx(0.25)
     assert by_name["BTC"].tp_pct == pytest.approx(0.10)
     assert by_name["ETH"].entry_thresh == pytest.approx(0.18)
-    assert by_name["XRP"].sides == (Side.UP,)
+    assert by_name["XRP"].sides == (Side.UP, Side.DOWN)
     assert by_name["XRP"].entry_thresh == pytest.approx(0.10)
     assert by_name["HYPE"].entry_thresh == pytest.approx(0.30)
     assert by_name["BTC"].stop_loss_pct == pytest.approx(0.20)
     # Default deployment only enables BTC; the Web config page turns others on.
     assert by_name["BTC"].enabled is True
     assert all(not by_name[n].enabled for n in by_name if n != "BTC")
-    assert [p.asset for p in s.plans()] == ["BTC"]
+    assert [p.asset for p in s.plans()] == ["BTC", "BTC"]
     assert s.execution.paper_trading is True
     assert s.mode == "paper"
     assert s.web.port == 8033

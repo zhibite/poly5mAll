@@ -16,7 +16,7 @@ def test_defaults_only_btc_enabled(tmp_path):
     rt = _runtime(tmp_path)
     assert rt.asset("BTC").enabled is True
     assert rt.asset("ETH").enabled is False
-    assert rt.asset("XRP").sides == (Side.UP,)
+    assert rt.asset("XRP").sides == (Side.UP, Side.DOWN)
     assert rt.asset("XRP").entry_thresh == pytest.approx(0.10)
 
 

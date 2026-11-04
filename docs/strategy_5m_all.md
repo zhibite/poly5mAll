@@ -19,7 +19,8 @@ start_epoch = floor(now / 300) * 300
 - 一个窗口有 UP / DOWN 两个 token，价格都在 (0, 1)。
 - 窗口内 token 是独立可交易资产；PnL 只看 token 价格，不看“方向是否猜对”。
 - 文档的回测把 UP、DOWN 分开统计；本运行时也为每个方向维护独立的
-  `SideRuntime`，所以 HYPE 可以同时跑两边（`SIDES="BOTH"`）。
+  `SideRuntime`。本项目默认所有币 `SIDES="BOTH"`，UP/DOWN 各开一笔；
+  可在 `/config` 改成单边。
 
 ## 2. 时间轴
 

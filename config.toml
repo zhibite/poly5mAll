@@ -115,53 +115,52 @@ LEVEL = "INFO"
 # ENTRY_THRESH: first-touch threshold in the 0–60 s window.
 # TP_PCT: take-profit fraction above the actual fill price.
 #
-# The doc's cross-asset conclusion is DOWN-only for six assets and UP-only
-# for XRP.  HYPE works on both sides (doc §3.3) but its §2 production top-1
-# is DOWN; switch SIDES to "BOTH" to run both.
+# The doc's direction study recommended DOWN (UP for XRP), but the operator
+# default in this project is BOTH for every asset.  Change per coin in
+# /config if you want one-sided trading.
 # ---------------------------------------------------------------------------
 
 [ASSETS.BTC]
 ENABLED = true  # 默认只启用 BTC；其余币可通过 Web 配置页开启
-SIDES = "DOWN"
+SIDES = "BOTH"
 ENTRY_THRESH = 0.25
 TP_PCT = 0.10
 
 [ASSETS.ETH]
 ENABLED = false
 # ETH comes from the older both-sides report; 0.18 is the reported sweet spot.
-SIDES = "DOWN"
+SIDES = "BOTH"
 ENTRY_THRESH = 0.18
 TP_PCT = 0.15
 
 [ASSETS.BNB]
 ENABLED = false
-SIDES = "DOWN"
+SIDES = "BOTH"
 ENTRY_THRESH = 0.15
 TP_PCT = 0.10
 
 [ASSETS.SOL]
 ENABLED = false
-SIDES = "DOWN"
+SIDES = "BOTH"
 ENTRY_THRESH = 0.15
 TP_PCT = 0.20
 
 [ASSETS.DOGE]
 ENABLED = false
-SIDES = "DOWN"
+SIDES = "BOTH"
 ENTRY_THRESH = 0.15
 TP_PCT = 0.25
 
 [ASSETS.XRP]
 ENABLED = false
-# The only UP-advantage asset in the doc (§4.3).  Do not flip this to DOWN
-# without re-backtesting: XRP's DOWN side is structurally negative.
-SIDES = "UP"
+# Doc §4.3 found an UP advantage; the operator default here is BOTH.
+SIDES = "BOTH"
 ENTRY_THRESH = 0.10
 TP_PCT = 0.25
 
 [ASSETS.HYPE]
 ENABLED = false
-# Doc §2 production: DOWN slightly better.  §3.3: both sides are strong.
-SIDES = "DOWN"
+# Doc §3.3: both sides are strong.
+SIDES = "BOTH"
 ENTRY_THRESH = 0.30
 TP_PCT = 0.10

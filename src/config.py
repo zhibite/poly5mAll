@@ -25,16 +25,18 @@ from src.models import Side, SidePlan
 
 ROOT = Path(__file__).resolve().parent.parent
 
-# docs/all_5m_strategy1_summary.md §2 — production recommendations.
+# Entry/TP values are from docs/all_5m_strategy1_summary.md §2.  The doc's
+# direction study recommended DOWN (UP for XRP), but the operator default in
+# this project is BOTH for every asset; change them per coin in /config.
 # (sides, entry_thresh, tp_pct)
-DOC_DEFAULTS: dict[str, tuple[str, float, float]] = {
-    "BTC": ("DOWN", 0.25, 0.10),
-    "ETH": ("DOWN", 0.18, 0.15),
-    "BNB": ("DOWN", 0.15, 0.10),
-    "SOL": ("DOWN", 0.15, 0.20),
-    "DOGE": ("DOWN", 0.15, 0.25),
-    "XRP": ("UP", 0.10, 0.25),
-    "HYPE": ("DOWN", 0.30, 0.10),
+ASSET_DEFAULTS: dict[str, tuple[str, float, float]] = {
+    "BTC": ("BOTH", 0.25, 0.10),
+    "ETH": ("BOTH", 0.18, 0.15),
+    "BNB": ("BOTH", 0.15, 0.10),
+    "SOL": ("BOTH", 0.15, 0.20),
+    "DOGE": ("BOTH", 0.15, 0.25),
+    "XRP": ("BOTH", 0.10, 0.25),
+    "HYPE": ("BOTH", 0.30, 0.10),
 }
 
 # The doc's asset order, used when TRADE_ASSETS is not set.
@@ -470,7 +472,7 @@ def _load_assets(
 ) -> list[AssetConfig]:
     assets_raw = _section(raw, "ASSETS")
     names = [str(k).upper() for k in assets_raw.keys()]
-    for name in DOC_DEFAULTS:
+    for name in ASSET_DEFAULTS:
         if name not in names:
             names.append(name)
 
@@ -488,8 +490,8 @@ def _load_assets(
     out: list[AssetConfig] = []
     for name in names:
         table = _section(assets_raw, name)
-        default_sides, default_entry, default_tp = DOC_DEFAULTS.get(
-            name, ("DOWN", 0.20, 0.10)
+        default_sides, default_entry, default_tp = ASSET_DEFAULTS.get(
+            name, ("BOTH", 0.20, 0.10)
         )
         sides_raw = _env(
             f"{name}_SIDES", str(_get(table, "SIDES", default_sides))
