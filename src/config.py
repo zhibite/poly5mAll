@@ -34,9 +34,9 @@ ASSET_DEFAULTS: dict[str, tuple[str, float, float]] = {
     "ETH": ("BOTH", 0.18, 0.15),
     "BNB": ("BOTH", 0.15, 0.10),
     "SOL": ("BOTH", 0.15, 0.20),
-    "DOGE": ("BOTH", 0.15, 0.25),
+    "DOGE": ("BOTH", 0.12, 0.25),
     "XRP": ("BOTH", 0.10, 0.25),
-    "HYPE": ("BOTH", 0.30, 0.10),
+    "HYPE": ("BOTH", 0.14, 0.25),
 }
 
 # The doc's asset order, used when TRADE_ASSETS is not set.

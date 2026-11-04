@@ -154,7 +154,7 @@ STOP_LOSS_PCT = 0.0
 [ASSETS.DOGE]
 ENABLED = false
 SIDES = "BOTH"
-ENTRY_THRESH = 0.15
+ENTRY_THRESH = 0.12
 TP_PCT = 0.25
 STOP_LOSS_PCT = 0.0
 
@@ -168,8 +168,8 @@ STOP_LOSS_PCT = 0.0
 
 [ASSETS.HYPE]
 ENABLED = false
-# Doc §3.3: both sides are strong.
+# Operator override: 0.14/25% (the doc's 0.30/10% was the original top-1).
 SIDES = "BOTH"
-ENTRY_THRESH = 0.30
-TP_PCT = 0.10
+ENTRY_THRESH = 0.14
+TP_PCT = 0.25
 STOP_LOSS_PCT = 0.0
