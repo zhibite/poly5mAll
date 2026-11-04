@@ -74,9 +74,8 @@ _BODY = r"""
         <th>启用</th><th>币种</th><th>方向</th>
         <th class="num">entry ≤</th><th class="num">TP %</th>
         <th class="num">止损 %</th><th class="num">每笔 U</th>
-        <th>TP 费后 / 笔</th><th>备注</th>
       </tr></thead>
-      <tbody id="rows"><tr><td colspan="9" class="no-data">加载中...</td></tr></tbody>
+      <tbody id="rows"><tr><td colspan="7" class="no-data">加载中...</td></tr></tbody>
     </table>
   </div>
 </div>
@@ -87,12 +86,6 @@ _BODY = r"""
   <span class="msg" id="msg"></span>
 </div>
 
-<div class="alert warn" style="margin-top:18px">
-  手续费公式：<span class="mono">fee = shares × 0.07 × p × (1-p)</span>。
-  若某方向 TP 的净利为负，列表会标红；可关闭该币，或用
-  <span class="mono">SKIP_FEE_NEGATIVE=true</span> 让后端跳过这些方向。
-  止损填 0 表示关闭价格止损。
-</div>
 """
 
 _SCRIPT = r"""
@@ -102,21 +95,6 @@ function sideValue(a) {
   const sides = (a.sides || []).map((s) => String(s).toUpperCase());
   if (sides.includes('UP') && sides.includes('DOWN')) return 'BOTH';
   return sides[0] || 'DOWN';
-}
-
-function feeCell(a) {
-  const fees = a.fees || [];
-  if (!fees.length) return '<span class="muted">--</span>';
-  return fees.map((f) => {
-    const bad = !!f.fee_negative;
-    const be = f.breakeven_tp === null
-      ? 'n/a' : (Number(f.breakeven_tp) * 100).toFixed(1) + '%';
-    return `<div class="fee-row">
-      <span class="pill ${bad ? 'red' : 'green'}">${escapeHtml(f.side)}</span>
-      <span class="${bad ? 'red' : 'green'}">${money(f.net_per_trade, 2)}</span>
-      <span class="muted">/ ${fmt(f.stake_usd, 0)}U · 盈亏平衡 TP ${be}</span>
-    </div>`;
-  }).join('');
 }
 
 function renderTiming(cfg) {
@@ -222,15 +200,11 @@ function render() {
           min="0.1" max="1000" style="width:90px"
           value="${(Number(a.tp_pct) * 100).toFixed(1)}"></td>
       <td class="num"><input type="number" data-k="stop_loss_pct" step="1"
-          min="0" max="99" style="width:90px"
+          min="0" max="99" style="width:90px" title="0 表示关闭价格止损"
           value="${sl}"></td>
       <td class="num"><input type="number" data-k="stake_usd" step="1"
           min="1" style="width:90px" value="${stake}"
           placeholder="${cfg.stake_usd}"></td>
-      <td>${feeCell(a)}</td>
-      <td>${a.fee_negative
-        ? '<span class="badge red">TP 费后为负</span>'
-        : '<span class="badge green">TP 费后为正</span>'}</td>
     </tr>`;
   }).join('') || '<tr><td colspan="9" class="no-data">没有资产</td></tr>';
 

@@ -146,7 +146,7 @@ class FeedConfig:
 class ExecutionConfig:
     paper_trading: bool = True
     live_enabled: bool = False
-    stake_usd: float = 10.0
+    stake_usd: float = 2.0
     taker_fee_rate: float = 0.07
     include_fees: bool = True
     # "observed": trigger on executable bid >= target; FAK sell at target
@@ -390,7 +390,7 @@ def load_settings(config_path: str | Path | None = None) -> Settings:
             "LIVE_ENABLED", _as_bool(_get(exec_raw, "LIVE_ENABLED", False), False)
         ),
         stake_usd=_env_float(
-            "STAKE_USD", _as_float(_get(exec_raw, "STAKE_USD", 10.0), 10.0)
+            "STAKE_USD", _as_float(_get(exec_raw, "STAKE_USD", 2.0), 2.0)
         ),
         taker_fee_rate=_env_float(
             "TAKER_FEE_RATE",

@@ -43,8 +43,8 @@ REQUEST_TIMEOUT_S = 5.0
 PAPER_TRADING = true
 LIVE_ENABLED = false
 
-# Fixed stake per trade (doc: 10 U per trade).
-STAKE_USD = 10.0
+# Fixed stake per trade.  The doc's backtest used 10 U; live default is 2 U.
+STAKE_USD = 2.0
 
 # Official Polymarket taker fee for the crypto category:
 #   fee = shares * rate * p * (1 - p)

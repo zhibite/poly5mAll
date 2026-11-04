@@ -80,8 +80,9 @@ else:
 
 - 触发价：WS BBO 中点（没有 BBO 时用 REST midpoint / last trade）；
 - 限价：`floor_tick(ENTRY_THRESH, 0.01)`；
-- paper：按 `/orderbook` 的 ask 阶梯用 10U 预算逐档吃单，只能吃到限价；
-- live：`FAK BUY`，amount = 10U，price = 限价。
+- paper：按 `/orderbook` 的 ask 阶梯用 `STAKE_USD`（默认 2U）预算逐档吃单，
+  只能吃到限价；
+- live：`FAK BUY`，amount = `STAKE_USD`，price = 限价。
 
 > 为什么触发用 mid、成交用 ask：文档的价格序列没有订单簿，只能用中间价
 > 定义“触及”；实盘必须按可成交的 ask 成交。若 mid 已到阈值但 ask 仍在
@@ -153,7 +154,7 @@ target 口径显著更差，因此 live 默认 observed。`trades.jsonl` 的
 
 FAK 可能只成交一部分：
 
-- 买入：按实际成交 shares / usdc / price 建仓，仓位可能小于 10U；
+- 买入：按实际成交 shares / usdc / price 建仓，仓位可能小于配置的 `STAKE_USD`（默认 2U）；
 - 卖出：每次减少 `remaining_shares`，累计 `exit_proceeds` / `exit_fees`；
 - 只有剩余份额为 0 才生成 `TradeRecord` 并进入 `CLOSED`；
 - 未卖完的仓位继续按 TP / 强平规则处理。
@@ -193,8 +194,9 @@ TP 毛利/份       = 0.25 * 10%              = 0.0250
 净利/份          = 0.0250 - 0.0271         = -0.0021
 ```
 
-10U 仓位 ≈ 40 份 -> TP 命中时约 **-0.08U**。BNB 0.15/10% 约 -0.24U，
-HYPE 0.30/10% 约 -0.006U。ETH/SOL/DOGE/XRP 的 TP 费后为正。
+文档回测 10U 仓位 ≈ 40 份 -> TP 命中时约 **-0.08U**。BNB 0.15/10% 约
+-0.24U，HYPE 0.30/10% 约 -0.006U。ETH/SOL/DOGE/XRP 的 TP 费后为正。
+本项目实盘默认 2U，金额按仓位比例缩小。
 
 表中按 entry 阈值和精确 TP 价计算；实盘按 0.01 tick 成交，入场可能略低、
 TP 可能高一档，实际净利会与表格不同（通常略好）。
@@ -248,7 +250,8 @@ GET {gamma}/events?slug={asset}-updown-5m-{epoch}
 ### 6.1 PaperBroker（默认）
 
 - 每次买入/卖出拉取一次 `/orderbook`；
-- 买入用 `walk_budget(asks, 10U, limit)`，卖出用 `walk_shares(bids, shares, limit)`；
+- 买入用 `walk_budget(asks, STAKE_USD, limit)`（默认 2U），卖出用
+  `walk_shares(bids, shares, limit)`；
 - 尊重档位深度，因此会部分成交；
 - REST 快照失败时退回 WS top-of-book（仅一档，size 视为无限）；
 - 手续费按官方公式扣除；
@@ -398,7 +401,7 @@ FastAPI + uvicorn 跑在策略的同一个事件循环里，端口 **8033**
    - `trades.jsonl` 的 `reason` 分布（tp / time_exit / settle）；
    - 净 PnL 与 gross PnL 的差值（手续费影响）；
    - 部分成交频率。
-3. 实盘第一周把 `STAKE_USD` 降到 10U 以下（例如 2U）验证成交和费用，
+3. 实盘默认 `STAKE_USD=2U`；第一周保持 2U 或更低验证成交和费用，
    同时设置 `MAX_DAILY_LOSS_USD`。
 4. 用 systemd / docker 托管时，确保进程有可写 `data/`；系统时区不影响
    计算，但**时钟必须准确（建议 NTP）**，因为 5m 窗口边界完全依赖 unix 时间。

@@ -141,7 +141,7 @@ def fee_table(plans: list[SidePlan], *, include_fees: bool = True,
     """Human-readable table for --check and the startup log."""
     lines = [
         "Per-trade TP economics (1 share basis; doc params, taker fees):",
-        "asset side  entry  tp%   tp$    gross   fees    net     net/10U  be_tp",
+        "asset side  entry  tp%   tp$    gross   fees    net     net/trade be_tp",
         "--------------------------------------------------------------------------------",
     ]
     for plan in plans:
@@ -158,7 +158,8 @@ def fee_table(plans: list[SidePlan], *, include_fees: bool = True,
         "--------------------------------------------------------------------------------"
     )
     lines.append(
-        "net/10U is the expected profit on a 10 U stake if the TP is hit. "
-        "Fees alone can make a TP a loss."
+        "net/trade is the expected profit on each plan's configured stake "
+        "(default 2 U; the doc's backtest used 10 U). Fees alone can make "
+        "a TP a loss."
     )
     return "\n".join(lines)
