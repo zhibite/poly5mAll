@@ -14,4 +14,9 @@ COPY src ./src
 # data/ is a volume in docker-compose; create it for standalone runs.
 RUN mkdir -p /app/data
 
+# Documentation only: the app actually listens on config.toml [WEB] PORT
+# (8033) or the WEB_PORT environment variable.  Publish it with
+# `docker run -p 8033:8033 ...` or the compose `ports` mapping.
+EXPOSE 8033
+
 CMD ["python", "-m", "src.main"]
