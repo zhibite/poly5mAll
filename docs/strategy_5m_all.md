@@ -425,7 +425,7 @@ vs 观察价（价格与 bps）。
 
 ## 12. 测试矩阵
 
-`python -m pytest -q`（49 个测试）：
+`python -m pytest -q`（50 个测试）：
 
 - `test_config.py`：文档默认参数、非法阈值、费后为负识别；
 - `test_strategy.py`：0–60s 入场、60s 后 TP、bid 触发、observed/market

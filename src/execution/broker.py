@@ -136,6 +136,7 @@ class PaperBroker:
         self.holdings: dict[str, float] = {}
         self.fills = 0
         self.last_error = ""
+        self._last_no_fill_log: dict[str, float] = {}
 
     # ── broker API ─────────────────────────────────────────────────────
     async def buy(
@@ -143,9 +144,18 @@ class PaperBroker:
     ) -> Fill | None:
         asks = await self._asks(token_id, limit_price, tick_size)
         if not asks:
+            self._log_no_fill(
+                token_id, "buy", "no asks (book empty / WS unavailable)"
+            )
             return None
         walk = walk_budget(asks, usd_amount, limit_price)
         if walk.shares <= 0 or walk.notional <= 0:
+            best = min((p for p, _ in asks), default=0.0)
+            self._log_no_fill(
+                token_id,
+                "buy",
+                f"best_ask={best:.4f} > limit={limit_price:.4f}",
+            )
             return None
         avg = walk.avg_price
         fee = (
@@ -171,9 +181,18 @@ class PaperBroker:
     ) -> Fill | None:
         bids = await self._bids(token_id, limit_price, tick_size)
         if not bids:
+            self._log_no_fill(
+                token_id, "sell", "no bids (book empty / WS unavailable)"
+            )
             return None
         walk = walk_shares(bids, shares, limit_price)
         if walk.shares <= 0 or walk.notional <= 0:
+            best = max((p for p, _ in bids), default=0.0)
+            self._log_no_fill(
+                token_id,
+                "sell",
+                f"best_bid={best:.4f} < limit={limit_price:.4f}",
+            )
             return None
         avg = walk.avg_price
         fee = (
@@ -203,6 +222,19 @@ class PaperBroker:
         """Re-register a position restored from the state file."""
         if shares > 0:
             self.holdings[token_id] = self.holdings.get(token_id, 0.0) + shares
+
+    def _log_no_fill(self, token_id: str, side: str, reason: str) -> None:
+        now = time.time()
+        last = self._last_no_fill_log.get(token_id, 0.0)
+        if now - last < 5.0:
+            return
+        self._last_no_fill_log[token_id] = now
+        log.info(
+            "paper.{}_no_fill token={} reason={}",
+            side,
+            token_id[:12],
+            reason,
+        )
 
     # ── book access ────────────────────────────────────────────────────
     async def _asks(

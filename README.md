@@ -259,7 +259,7 @@ src/
   web/config_page.py        7 币策略配置页面
   web/stats.py              交易统计（PnL/胜率/盈亏比/回撤/分币种/按日）
   main.py                   CLI 入口
-tests/                      49 个离线测试（策略、paper 撮合、状态机、配置、FAK 解析、Web API/登录、观察价止盈、价格止损）
+tests/                      50 个离线测试（策略、paper 撮合、状态机、配置、FAK 解析、Web API/登录、观察价止盈、价格止损）
 docs/strategy_5m_all.md     详细设计与口径
 ```
 
@@ -318,7 +318,7 @@ docs/strategy_5m_all.md     详细设计与口径
 
 ```bash
 python -m pytest -q
-# 49 passed
+# 50 passed
 ```
 
 测试覆盖：文档参数加载/校验、费用公式与 breakeven、入场只在 0–60s、

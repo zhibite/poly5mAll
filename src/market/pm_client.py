@@ -232,20 +232,36 @@ class PolymarketClient:
             return 0.0
 
     async def get_order_book(self, token_id: str) -> dict[str, Any] | None:
-        """Raw CLOB order book: ``{"bids": [...], "asks": [...]}``."""
+        """Raw CLOB order book: ``{"bids": [...], "asks": [...]}``.
+
+        The current CLOB serves depth at ``/book``.  ``/orderbook`` was the
+        older path used by 02.poly1h; it now returns 404, so try ``/book``
+        first and keep the legacy path as a harmless fallback.
+        """
         c = await self._client()
-        try:
-            resp = await c.get(
-                f"{self.polymarket_host}/orderbook",
-                params={"token_id": token_id},
-                timeout=3.0,
-            )
-            resp.raise_for_status()
-            data = resp.json()
-            return data if isinstance(data, dict) else None
-        except Exception as exc:  # noqa: BLE001
-            log.debug("clob.orderbook failed token={} error={}", token_id[:12], exc)
-            return None
+        last_error = ""
+        for path in ("/book", "/orderbook"):
+            try:
+                resp = await c.get(
+                    f"{self.polymarket_host}{path}",
+                    params={"token_id": token_id},
+                    timeout=3.0,
+                )
+                if resp.status_code != 200:
+                    last_error = f"{path} HTTP {resp.status_code}"
+                    continue
+                data = resp.json()
+                if isinstance(data, dict):
+                    return data
+                last_error = f"{path} non-object response"
+            except Exception as exc:  # noqa: BLE001
+                last_error = f"{path} {exc}"
+        log.debug(
+            "clob.orderbook failed token={} error={}",
+            token_id[:12],
+            last_error,
+        )
+        return None
 
     async def get_tick_size(self, token_id: str) -> float:
         c = await self._client()

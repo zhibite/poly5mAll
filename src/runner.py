@@ -352,6 +352,8 @@ class AssetRunner:
             log.exception("[{}] buy failed: {}", self.asset, exc)
             return
         if fill is None or fill.shares <= 0:
+            side.last_reason = "no-fill"
+            self._log_skip("no-fill", side, now)
             side.on_entry_missed(now)
             return
 
