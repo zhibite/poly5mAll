@@ -24,7 +24,7 @@ _BODY = r"""
   <div class="stat-card">
     <div class="stat-label">taker 费率</div>
     <div class="stat-value purple" id="fee-rate">--</div>
-    <div class="stat-sub">官方公式 fee = shares × rate × p × (1-p)</div>
+    <div class="stat-sub">fee = shares × rate × p × (1-p)</div>
   </div>
   <div class="stat-card">
     <div class="stat-label">已启用</div>
@@ -46,10 +46,10 @@ _BODY = r"""
 <div id="auth-alert"></div>
 
 <div class="alert info">
-  <b>生效时机：</b>启用/关闭 <b>立即</b> 阻止/允许新开仓；方向、entry、TP、每笔仓位在
-  <b>下一个 5m 窗口</b> 生效。已有仓位始终按原参数止盈/240s 强平，不受关闭影响。
-  密钥、端口、费率不在本页，需改 <span class="mono">.env</span> /
-  <span class="mono">config.toml</span>。
+  <b>生效时机：</b>启用/关闭 <b>立即</b> 阻止/允许新开仓；方向、entry、TP、止损、每笔仓位在
+  <b>下一个 5m 窗口</b> 生效。已有仓位始终按原参数止盈/止损/240s 强平。
+  密钥、端口、费率、`TP_EXECUTION_MODE` 不在本页，需改
+  <span class="mono">.env</span> / <span class="mono">config.toml</span>。
 </div>
 
 <div class="section">
@@ -59,14 +59,26 @@ _BODY = r"""
     <div class="no-data">加载中...</div>
   </div>
   <div class="alert info" style="margin:14px 0 0">
-    止盈公式：<span class="mono">target = 实际成交价 × (1 + TP%)</span>。
+    止盈公式：<span class="mono">target = 实际成交价 × (1 + TP%)</span>；
+    价格止损：<span class="mono">sl = 实际成交价 × (1 − 止损%)</span>。
     默认 <span class="mono">observed</span>：触发后 FAK 卖出，成交价取当时最优
-    bid，不是挂 target 限价；价格跳到更高会按观察价成交。
+    bid；价格止损默认 20%，只从 t=60s 开始检查。
   </div>
 </div>
 
-<div class="config-grid" id="cards">
-  <div class="no-data" style="grid-column:1/-1">加载中...</div>
+<div class="section">
+  <h2>7 个币的参数</h2>
+  <div class="table-wrap">
+    <table>
+      <thead><tr>
+        <th>启用</th><th>币种</th><th>方向</th>
+        <th class="num">entry ≤</th><th class="num">TP %</th>
+        <th class="num">止损 %</th><th class="num">每笔 U</th>
+        <th>TP 费后 / 笔</th><th>备注</th>
+      </tr></thead>
+      <tbody id="rows"><tr><td colspan="9" class="no-data">加载中...</td></tr></tbody>
+    </table>
+  </div>
 </div>
 
 <div class="save-bar">
@@ -77,8 +89,9 @@ _BODY = r"""
 
 <div class="alert warn" style="margin-top:18px">
   手续费公式：<span class="mono">fee = shares × 0.07 × p × (1-p)</span>。
-  若某方向 TP 的净利为负，卡片会标红；可关闭该币，或用
+  若某方向 TP 的净利为负，列表会标红；可关闭该币，或用
   <span class="mono">SKIP_FEE_NEGATIVE=true</span> 让后端跳过这些方向。
+  止损填 0 表示关闭价格止损。
 </div>
 """
 
@@ -121,7 +134,7 @@ function renderTiming(cfg) {
     {label: '止盈', dur: Math.max(1, force - tpStart), cls: 'seg-tp',
      title: `${tpStart}–${force}s：价格 ≥ 成交价×(1+TP%) 卖出`},
     {label: '强平', dur: Math.max(1, deadline - force), cls: 'seg-sl',
-     title: `${force}–${deadline}s：未止盈则 FAK 市价卖出，每秒重试`},
+     title: `${force}–${deadline}s：未止盈/未止损则 FAK 市价卖出，每秒重试`},
     {label: '结算', dur: Math.max(1, total - deadline), cls: 'seg-settle',
      title: `${deadline}–${total}s：未卖出则按 Gamma 0/1 结算`},
   ];
@@ -143,10 +156,16 @@ function renderTiming(cfg) {
       <div class="t-desc">价格 ≥ 实际成交价 × (1 + TP%) 时卖出；
         默认 observed，按当时最优 bid 成交。</div>
     </div>
+    <div class="timing-card sl-price">
+      <div class="t-label">价格止损（默认 20%）</div>
+      <div class="t-time">${tpStart}–${force}s</div>
+      <div class="t-desc">观察价 ≤ 实际成交价 × (1 − 止损%) 时，
+        按观察价市价卖出；0–60s 不设止损。</div>
+    </div>
     <div class="timing-card sl">
       <div class="t-label">时间止损 / 强平</div>
       <div class="t-time">${force}–${deadline}s</div>
-      <div class="t-desc">到 ${force}s 仍未止盈，FAK 市价卖出并每秒重试；
+      <div class="t-desc">到 ${force}s 仍未止盈/止损，FAK 市价卖出并每秒重试；
         这是时间止损，不是价格止损。</div>
     </div>
     <div class="timing-card settle">
@@ -180,61 +199,61 @@ function render() {
     $('auth-alert').innerHTML = '';
   }
 
-  $('cards').innerHTML = (cfg.assets || []).map((a) => {
+  $('rows').innerHTML = (cfg.assets || []).map((a) => {
     const stake = a.stake_usd === null || a.stake_usd === undefined
       ? '' : a.stake_usd;
+    const sl = (Number(a.stop_loss_pct ?? 0.20) * 100).toFixed(1);
     const on = !!a.enabled;
-    return `<div class="asset-card" data-asset="${escapeHtml(a.asset)}">
-      <div class="asset-head">
-        <div>
-          <span class="asset-name">${escapeHtml(a.asset)}</span>
-          <span class="pill ${on ? 'green' : ''}">${on ? '启用' : '关闭'}</span>
-        </div>
-        <label class="switch-row">
-          <input type="checkbox" data-k="enabled" ${on ? 'checked' : ''}>
-          启用
-        </label>
-      </div>
-      <div class="asset-fields">
-        <div class="field">
-          <label>方向</label>
-          <select data-k="sides">
-            <option value="DOWN" ${sideValue(a) === 'DOWN' ? 'selected' : ''}>DOWN</option>
-            <option value="UP" ${sideValue(a) === 'UP' ? 'selected' : ''}>UP</option>
-            <option value="BOTH" ${sideValue(a) === 'BOTH' ? 'selected' : ''}>BOTH（双向）</option>
-          </select>
-        </div>
-        <div class="field">
-          <label>entry ≤</label>
-          <input type="number" data-k="entry_thresh" step="0.01"
-                 min="0.01" max="0.99" value="${a.entry_thresh}">
-        </div>
-        <div class="field">
-          <label>TP %</label>
-          <input type="number" data-k="tp_pct" step="0.5"
-                 min="0.1" max="1000"
-                 value="${(Number(a.tp_pct) * 100).toFixed(1)}">
-        </div>
-        <div class="field">
-          <label>每笔 U <span class="help">留空=全局 ${cfg.stake_usd}U</span></label>
-          <input type="number" data-k="stake_usd" step="1" min="1"
-                 value="${stake}" placeholder="${cfg.stake_usd}">
-        </div>
-      </div>
-      <div class="fee-line">${feeCell(a)}</div>
-    </div>`;
-  }).join('') || '<div class="no-data" style="grid-column:1/-1">没有资产</div>';
+    return `<tr data-asset="${escapeHtml(a.asset)}">
+      <td><input type="checkbox" data-k="enabled" ${on ? 'checked' : ''}></td>
+      <td><b>${escapeHtml(a.asset)}</b><br>
+        <span class="pill ${on ? 'green' : ''}" data-role="state">${on ? '启用' : '关闭'}</span>
+      </td>
+      <td>
+        <select data-k="sides" style="width:118px">
+          <option value="DOWN" ${sideValue(a) === 'DOWN' ? 'selected' : ''}>DOWN</option>
+          <option value="UP" ${sideValue(a) === 'UP' ? 'selected' : ''}>UP</option>
+          <option value="BOTH" ${sideValue(a) === 'BOTH' ? 'selected' : ''}>BOTH（双向）</option>
+        </select>
+      </td>
+      <td class="num"><input type="number" data-k="entry_thresh" step="0.01"
+          min="0.01" max="0.99" style="width:90px" value="${a.entry_thresh}"></td>
+      <td class="num"><input type="number" data-k="tp_pct" step="0.5"
+          min="0.1" max="1000" style="width:90px"
+          value="${(Number(a.tp_pct) * 100).toFixed(1)}"></td>
+      <td class="num"><input type="number" data-k="stop_loss_pct" step="1"
+          min="0" max="99" style="width:90px"
+          value="${sl}"></td>
+      <td class="num"><input type="number" data-k="stake_usd" step="1"
+          min="1" style="width:90px" value="${stake}"
+          placeholder="${cfg.stake_usd}"></td>
+      <td>${feeCell(a)}</td>
+      <td>${a.fee_negative
+        ? '<span class="badge red">TP 费后为负</span>'
+        : '<span class="badge green">TP 费后为正</span>'}</td>
+    </tr>`;
+  }).join('') || '<tr><td colspan="9" class="no-data">没有资产</td></tr>';
+
+  for (const cb of document.querySelectorAll('#rows input[data-k="enabled"]')) {
+    cb.addEventListener('change', () => {
+      const state = cb.closest('tr').querySelector('[data-role="state"]');
+      if (!state) return;
+      state.textContent = cb.checked ? '启用' : '关闭';
+      state.className = 'pill ' + (cb.checked ? 'green' : '');
+    });
+  }
 }
 
 function collect() {
   const assets = {};
-  for (const card of document.querySelectorAll('.asset-card[data-asset]')) {
-    const asset = card.getAttribute('data-asset');
-    const get = (k) => card.querySelector(`[data-k="${k}"]`);
+  for (const tr of document.querySelectorAll('#rows tr[data-asset]')) {
+    const asset = tr.getAttribute('data-asset');
+    const get = (k) => tr.querySelector(`[data-k="${k}"]`);
     const enabled = get('enabled').checked;
     const sides = get('sides').value;
     const entry = Number(get('entry_thresh').value);
     const tpPct = Number(get('tp_pct').value);
+    const slPct = Number(get('stop_loss_pct').value);
     const stakeRaw = get('stake_usd').value;
     const stake = stakeRaw === '' ? null : Number(stakeRaw);
 
@@ -245,6 +264,9 @@ function collect() {
     if (entry * (1 + tpPct / 100) >= 1) {
       throw new Error(`${asset}: entry × (1 + TP%) 必须 < 1`);
     }
+    if (!(slPct >= 0 && slPct < 100)) {
+      throw new Error(`${asset}: 止损% 必须在 [0, 100) 之间，0 表示关闭`);
+    }
     if (stake !== null && !(stake > 0)) {
       throw new Error(`${asset}: 每笔 U 必须 > 0 或留空`);
     }
@@ -253,6 +275,7 @@ function collect() {
       sides,
       entry_thresh: entry,
       tp_pct: tpPct / 100,
+      stop_loss_pct: slPct / 100,
       stake_usd: stake,
     };
   }

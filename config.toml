@@ -60,6 +60,11 @@ INCLUDE_FEES = true
 #              bid (doc's option B); can fill below target.
 TP_EXECUTION_MODE = "observed"
 
+# Price stop-loss, active from t=60s to 240s:
+#   observed mid <= entry_price * (1 - STOP_LOSS_PCT) -> marketable FAK sell.
+# 0 disables the price stop.  0–60s never stops out (observation window).
+STOP_LOSS_PCT = 0.20
+
 # Retry cadence when a FAK order returns no fill.
 ENTRY_RETRY_S = 1.0
 EXIT_RETRY_S = 1.0

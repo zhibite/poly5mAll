@@ -19,6 +19,7 @@ def test_doc_defaults_load():
     assert by_name["XRP"].sides == (Side.UP,)
     assert by_name["XRP"].entry_thresh == pytest.approx(0.10)
     assert by_name["HYPE"].entry_thresh == pytest.approx(0.30)
+    assert by_name["BTC"].stop_loss_pct == pytest.approx(0.20)
     # Default deployment only enables BTC; the Web config page turns others on.
     assert by_name["BTC"].enabled is True
     assert all(not by_name[n].enabled for n in by_name if n != "BTC")

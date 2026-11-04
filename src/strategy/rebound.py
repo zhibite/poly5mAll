@@ -86,6 +86,28 @@ class SideRuntime:
         return None
 
     # ── take profit ────────────────────────────────────────────────────
+    def sl_due(
+        self,
+        now: float,
+        quote: Quote | None,
+        general: GeneralConfig,
+        execution: ExecutionConfig,
+        feed: FeedConfig,
+    ) -> bool:
+        """Price stop, active only in the 60–240s management window."""
+        if self.status is not SideStatus.HOLDING or self.position is None:
+            return False
+        if self.position.sl_price <= 0:
+            return False
+        t = self.window.seconds_since(now)
+        if t < general.tp_window_start_s or t >= general.force_exit_s:
+            return False
+        if now - self.last_exit_attempt < execution.exit_retry_s:
+            return False
+        if quote is None or quote.age(now) > feed.exit_stale_price_max_age_s:
+            return False
+        return quote.mid <= self.position.sl_price
+
     def tp_due(
         self,
         now: float,
@@ -140,6 +162,10 @@ class SideRuntime:
     ) -> Position:
         if fill.price <= 0 or fill.price >= 1 or fill.shares <= 0:
             raise ValueError(f"invalid entry fill: {fill}")
+        sl_pct = float(self.plan.stop_loss_pct or 0.0)
+        sl_price = (
+            float(fill.price) * (1.0 - sl_pct) if sl_pct > 0 else 0.0
+        )
         position = Position(
             position_id=f"{self.plan.asset}-{self.plan.side.value}-{self.window.start_ts}",
             asset=self.plan.asset,
@@ -154,6 +180,7 @@ class SideRuntime:
             cost_usd=float(fill.usdc),
             entry_fee=float(fill.fee),
             tp_price=float(fill.price) * (1.0 + self.plan.tp_pct),
+            sl_price=sl_price,
             stake_usd=float(self.plan.stake_usd),
             up_token=self.window.up_token,
             down_token=self.window.down_token,
@@ -230,6 +257,7 @@ class SideRuntime:
             pnl_net=pnl_net,
             stake_usd=position.stake_usd,
             mode=mode,
+            sl_price=position.sl_price,
         )
 
     def on_exit_missed(self, now: float) -> None:
@@ -277,6 +305,7 @@ class SideRuntime:
             pnl_net=pnl_net,
             stake_usd=position.stake_usd,
             mode=mode,
+            sl_price=position.sl_price,
             note=note,
         )
 

@@ -185,6 +185,10 @@ class AssetRunner:
             side_rt.position = pos
             side_rt.status = SideStatus.HOLDING
             side_rt.last_exit_attempt = 0.0
+            if pos.sl_price <= 0 and side_rt.plan.stop_loss_pct > 0:
+                pos.sl_price = pos.entry_price * (
+                    1.0 - float(side_rt.plan.stop_loss_pct)
+                )
             adopted.append(pos)
             log.info(
                 "[{}] adopted {} {} shares={:.4f} entry={:.4f} tp={:.4f}",
@@ -264,6 +268,16 @@ class AssetRunner:
             return
 
         if side.status is SideStatus.SETTLE_PENDING:
+            return
+
+        if side.sl_due(
+            now,
+            quote,
+            self.settings.general,
+            self.settings.execution,
+            self.settings.feed,
+        ):
+            await self._exit(side, now, quote, reason="stop_loss")
             return
 
         if side.tp_due(
@@ -545,6 +559,8 @@ class AssetRunner:
                 ),
                 "entry_thresh": side.plan.entry_thresh,
                 "tp_pct": side.plan.tp_pct,
+                "stop_loss_pct": side.plan.stop_loss_pct,
+                "sl_price": round(pos.sl_price, 4) if pos is not None else None,
                 "mid": round(quote.mid, 4) if quote else None,
                 "bid": round(quote.bid, 4) if quote else None,
                 "ask": round(quote.ask, 4) if quote else None,
@@ -579,6 +595,7 @@ class AssetRunner:
                 "sides": [s.value for s in cfg.sides],
                 "entry_thresh": cfg.entry_thresh,
                 "tp_pct": cfg.tp_pct,
+                "stop_loss_pct": cfg.stop_loss_pct,
                 "stake_usd": cfg.stake_usd
                 or self.settings.execution.stake_usd,
             },
@@ -1128,5 +1145,6 @@ def _settle_orphan(
         pnl_net=pnl_net,
         stake_usd=pos.stake_usd,
         mode=mode,
+        sl_price=pos.sl_price,
         note="orphan settlement",
     )

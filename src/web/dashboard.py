@@ -64,10 +64,10 @@ _BODY = r"""
       <thead><tr>
         <th>资产</th><th>启用</th><th>窗口</th><th>阶段</th><th>方向</th><th>状态</th>
         <th class="num">mid</th><th class="num">bid/ask</th>
-        <th class="num">entry≤</th><th class="num">TP</th>
+        <th class="num">entry≤</th><th class="num">TP</th><th class="num">SL</th>
         <th class="num">持仓</th><th class="num">浮盈 U</th>
       </tr></thead>
-      <tbody id="assets"><tr><td colspan="12" class="no-data">加载中...</td></tr></tbody>
+      <tbody id="assets"><tr><td colspan="13" class="no-data">加载中...</td></tr></tbody>
     </table>
   </div>
 </div>
@@ -104,7 +104,7 @@ function renderAssets(s) {
       rows.push(`<tr>
         <td><b>${escapeHtml(asset)}</b></td>
         <td>${enabledPill}</td>
-        <td colspan="10" class="muted">${reason}</td>
+        <td colspan="11" class="muted">${reason}</td>
       </tr>`);
       continue;
     }
@@ -124,12 +124,13 @@ function renderAssets(s) {
         <td class="num">${fmt(side.bid, 3)} / ${fmt(side.ask, 3)}</td>
         <td class="num">${fmt(side.entry_thresh, 2)}</td>
         <td class="num">${fmt(side.tp_pct * 100, 0)}%</td>
+        <td class="num">${side.sl_price ? fmt(side.sl_price, 3) : '--'}</td>
         <td class="num">${pos}</td>
         <td class="num ${cls(side.unrealized_usd)}">${money(side.unrealized_usd, 3)}</td>
       </tr>`);
     }
   }
-  $('assets').innerHTML = rows.join('') || '<tr><td colspan="12" class="no-data">暂无资产</td></tr>';
+  $('assets').innerHTML = rows.join('') || '<tr><td colspan="13" class="no-data">暂无资产</td></tr>';
 }
 
 function renderTrades(trades) {

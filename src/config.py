@@ -155,6 +155,9 @@ class ExecutionConfig:
     # "market":   trigger on observed mid >= target; marketable FAK below
     #             the bid (doc's option B).  Can fill below target.
     tp_execution_mode: str = "observed"
+    # Price stop-loss after t=60s: exit when observed mid <= entry * (1-SL).
+    # 0 disables it.  The doc's backtest found -20% improves both PnL and DD.
+    stop_loss_pct: float = 0.20
     entry_retry_s: float = 1.0
     exit_retry_s: float = 1.0
     slippage_pct: float = 2.0
@@ -205,6 +208,7 @@ class AssetConfig:
     entry_thresh: float
     tp_pct: float
     stake_usd: float | None = None
+    stop_loss_pct: float = 0.20
 
     def plans(self, default_stake: float) -> list[SidePlan]:
         stake = float(self.stake_usd or default_stake)
@@ -215,6 +219,7 @@ class AssetConfig:
                 entry_thresh=float(self.entry_thresh),
                 tp_pct=float(self.tp_pct),
                 stake_usd=stake,
+                stop_loss_pct=float(self.stop_loss_pct),
             )
             for side in self.sides
         ]
@@ -399,6 +404,10 @@ def load_settings(config_path: str | Path | None = None) -> Settings:
             str(_get(exec_raw, "TP_EXECUTION_MODE", "observed")),
         ).lower()
         or "observed",
+        stop_loss_pct=_env_float(
+            "STOP_LOSS_PCT",
+            _as_float(_get(exec_raw, "STOP_LOSS_PCT", 0.20), 0.20),
+        ),
         entry_retry_s=_as_float(_get(exec_raw, "ENTRY_RETRY_S", 1.0), 1.0),
         exit_retry_s=_as_float(_get(exec_raw, "EXIT_RETRY_S", 1.0), 1.0),
         slippage_pct=_as_float(_get(exec_raw, "SLIPPAGE_PCT", 2.0), 2.0),
@@ -511,6 +520,13 @@ def _load_assets(
                 ) from exc
         if stake is not None:
             stake = float(stake)
+        sl = _env_float(
+            f"{name}_STOP_LOSS_PCT",
+            _as_float(
+                _get(table, "STOP_LOSS_PCT", execution.stop_loss_pct),
+                execution.stop_loss_pct,
+            ),
+        )
         out.append(
             AssetConfig(
                 asset=name,
@@ -519,6 +535,7 @@ def _load_assets(
                 entry_thresh=entry,
                 tp_pct=tp,
                 stake_usd=stake,
+                stop_loss_pct=sl,
             )
         )
     return out
@@ -639,6 +656,8 @@ def validate_settings(settings: Settings) -> None:
             "TP_EXECUTION_MODE must be 'observed' or 'market', got "
             f"{e.tp_execution_mode!r}"
         )
+    if not (0.0 <= e.stop_loss_pct < 1.0):
+        raise ConfigError("STOP_LOSS_PCT must be in [0, 1)")
     if e.max_spread_abs < 0:
         raise ConfigError("MAX_SPREAD_ABS must be >= 0")
 
@@ -675,6 +694,8 @@ def validate_settings(settings: Settings) -> None:
             )
         if asset.stake_usd is not None and asset.stake_usd <= 0:
             raise ConfigError(f"{asset.asset}: STAKE_USD must be > 0")
+        if not (0.0 <= asset.stop_loss_pct < 1.0):
+            raise ConfigError(f"{asset.asset}: STOP_LOSS_PCT must be in [0, 1)")
 
 
 def fee_negative_plans(settings: Settings) -> list[str]:
@@ -714,6 +735,7 @@ def describe(settings: Settings) -> str:
         flag = "" if asset.enabled else "  [off]"
         lines.append(
             f"  {asset.asset:5} {sides:9} entry<={asset.entry_thresh:.2f}  "
-            f"tp={asset.tp_pct*100:.0f}%  stake={stake:g}U{flag}"
+            f"tp={asset.tp_pct*100:.0f}%  sl={asset.stop_loss_pct*100:.0f}%  "
+            f"stake={stake:g}U{flag}"
         )
     return "\n".join(lines)

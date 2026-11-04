@@ -111,6 +111,7 @@ def test_config_defaults_and_update(client):
     by_name = {a["asset"]: a for a in data["assets"]}
     assert by_name["BTC"]["enabled"] is True
     assert by_name["ETH"]["enabled"] is False
+    assert by_name["BTC"]["stop_loss_pct"] == pytest.approx(0.20)
     assert data["web"]["port"] == 8033
     assert any(f["asset"] == "BTC" and f["side"] == "DOWN" for f in data["fee_lines"])
 
@@ -123,6 +124,7 @@ def test_config_defaults_and_update(client):
                     "sides": "DOWN",
                     "entry_thresh": 0.2,
                     "tp_pct": 0.3,
+                    "stop_loss_pct": 0.15,
                     "stake_usd": 5,
                 }
             }
@@ -133,6 +135,7 @@ def test_config_defaults_and_update(client):
     by_name = {a["asset"]: a for a in data["assets"]}
     assert by_name["ETH"]["enabled"] is True
     assert by_name["ETH"]["entry_thresh"] == pytest.approx(0.2)
+    assert by_name["ETH"]["stop_loss_pct"] == pytest.approx(0.15)
     assert by_name["ETH"]["stake_usd"] == pytest.approx(5.0)
 
     r = client.post("/api/config/reset")

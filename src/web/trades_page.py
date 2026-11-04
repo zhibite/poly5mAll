@@ -49,7 +49,8 @@ _BODY = r"""
     <select id="f-reason" style="width:150px">
       <option value="">全部原因</option>
       <option value="tp">tp（止盈）</option>
-      <option value="time_exit">time_exit（240s）</option>
+      <option value="stop_loss">stop_loss（价格止损）</option>
+      <option value="time_exit">time_exit（240s 强平）</option>
       <option value="settle">settle（结算）</option>
       <option value="shutdown">shutdown（退出）</option>
     </select>
@@ -135,7 +136,8 @@ let ASSET_OPTIONS_LOADED = false;
 function reasonLabel(r) {
   return ({
     tp: 'tp（止盈）',
-    time_exit: 'time_exit（240s）',
+    stop_loss: 'stop_loss（价格止损）',
+    time_exit: 'time_exit（240s 强平）',
     settle: 'settle（结算）',
     shutdown: 'shutdown（退出）',
   })[String(r || '').toLowerCase()] || (r || '--');

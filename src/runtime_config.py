@@ -83,6 +83,17 @@ def _validate_values(
     elif "stake_usd" in raw:
         out["stake_usd"] = None
 
+    if "stop_loss_pct" in raw:
+        try:
+            sl = float(raw["stop_loss_pct"])
+        except (TypeError, ValueError) as exc:
+            raise ValueError(
+                f"{name}: stop_loss_pct must be a number"
+            ) from exc
+        if not (0.0 <= sl < 1.0):
+            raise ValueError(f"{name}: stop_loss_pct must be in [0, 1)")
+        out["stop_loss_pct"] = sl
+
     return out
 
 
@@ -115,6 +126,9 @@ class RuntimeConfig:
             entry_thresh=float(ov.get("entry_thresh", base.entry_thresh)),
             tp_pct=float(ov.get("tp_pct", base.tp_pct)),
             stake_usd=ov.get("stake_usd", base.stake_usd),
+            stop_loss_pct=float(
+                ov.get("stop_loss_pct", base.stop_loss_pct)
+            ),
         )
 
     def assets(self) -> tuple[AssetConfig, ...]:
@@ -132,6 +146,7 @@ class RuntimeConfig:
                     "entry_thresh": a.entry_thresh,
                     "tp_pct": a.tp_pct,
                     "stake_usd": a.stake_usd,
+                    "stop_loss_pct": a.stop_loss_pct,
                 }
             )
         return out
@@ -235,6 +250,7 @@ class RuntimeConfig:
                     "entry_thresh": row["entry_thresh"],
                     "tp_pct": row["tp_pct"],
                     "stake_usd": row["stake_usd"],
+                    "stop_loss_pct": row["stop_loss_pct"],
                 }
                 for row in self.snapshot()
             },

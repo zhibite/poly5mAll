@@ -18,8 +18,9 @@ best bid/ask 与 last trade、CLOB `/midpoint` 每 2 秒作为稳定兜底。
 ```
 t = 0                5m 市场开始（slug = {asset}-updown-5m-{epoch}）
 0 <= t <= 60 s       观察；该方向价格首次 <= ENTRY_THRESH -> 买入
-60 < t < 240 s       价格首次 >= 实际成交价 * (1 + TP_PCT) -> 卖出止盈
-t >= 240 s           仍未止盈 -> 以市价 FAK 强平（文档的“240s SL 单点判定”）
+60 <= t < 240 s      止盈：价格 >= 实际成交价 * (1 + TP_PCT)
+                     止损：观察价 <= 实际成交价 * (1 - STOP_LOSS_PCT)，默认 20%
+t >= 240 s           仍未止盈/止损 -> 以市价 FAK 强平（文档的“240s SL 单点判定”）
 t > 295 s            仍未卖出 -> 标记 SETTLE_PENDING，按 Gamma 结算价记账
 ```
 
@@ -47,6 +48,21 @@ observed。
 可成交 FAK（限价在 bid 下方 2%），能吃到越价，但 bid 没跟上时也可能**低于
 target 成交**。默认不用。
 
+### 价格止损（默认 20%，从 60s 开始）
+
+- **0–60s 不设价格止损**：这段时间是观察窗口，回测显示提前止损会杀掉后续
+  TP 赢单。
+- **60–240s**：逐 tick 检查观察价 `mid`；当
+  `mid <= 实际成交价 × (1 - STOP_LOSS_PCT)` 时触发。
+- 执行：可成交 FAK 卖出（限价在 bid 下方 2%），成交价取当时最优 bid；
+  `reason="stop_loss"`。
+- 默认 `STOP_LOSS_PCT=0.20`；填 0 关闭。可在 `/config` 页按币调整。
+- 240s 后仍未退出则由时间强平接管，295s 后进入结算。
+
+回测报告 `docs/btc_5m_strategy1_recheck_2026-11-04.md` 显示：`0.25/10%`
+加 −20% 止损后总盈亏 +5,685U → **+7,002U**，最大回撤 439U → **302U**；
+止损从入场就开始反而更差，所以本实现固定在 t=60s 后才启用。
+
 ## 2. 文档生产参数（`config.toml`）
 
 | 品种 | 方向 | entry | tp% | 文档依据 |
@@ -59,7 +75,8 @@ target 成交**。默认不用。
 | **XRP** | **UP** | 0.10 | 25% | §2 / §4.3（唯一 UP 优势） |
 | HYPE | DOWN | 0.30 | 10% | §2 / §4.7 |
 
-单笔仓位固定 **10 U**（`EXECUTION.STAKE_USD`）。
+单笔仓位固定 **10 U**（`EXECUTION.STAKE_USD`）；**所有币默认价格止损 20%**
+（`[EXECUTION] STOP_LOSS_PCT=0.20`，可在配置页按币覆盖，0=关闭）。
 **默认只启用 BTC**（`[ASSETS.BTC] ENABLED=true`，其余为 false）；在
 `http://<host>:8033/config` 可以逐币开启/关闭并修改参数。
 
@@ -156,7 +173,7 @@ docker compose logs -f
 |---|---|
 | `/` | 控制台：模式、运行时长、今日/累计 PnL、胜率、盈亏比、手续费；7 币当前窗口/持仓；暂停新开仓；全部市价平仓 |
 | `/trades` | 交易记录：每笔明细（入场/出场/费用/净 PnL/持有时间）、按币种统计、按日统计、筛选与分页 |
-| `/config` | 策略配置：5 分钟时间轴（0–60s 入场 / 60–240s 止盈 / 240–295s 强平 / 295–300s 结算）；7 个币的启用开关、方向、entry、TP%、每笔 U；TP 费后提示；恢复默认（仅 BTC） |
+| `/config` | 策略配置：5 分钟时间轴（0–60s 入场 / 60–240s 止盈与价格止损 / 240–295s 强平 / 295–300s 结算）；7 个币的启用开关、方向、entry、TP%、止损%、每笔 U（列表）；TP 费后提示；恢复默认（仅 BTC） |
 
 ### 5.2 配置生效时机
 
@@ -220,7 +237,7 @@ src/
   web/config_page.py        7 币策略配置页面
   web/stats.py              交易统计（PnL/胜率/盈亏比/回撤/分币种/按日）
   main.py                   CLI 入口
-tests/                      46 个离线测试（策略、paper 撮合、状态机、配置、FAK 解析、Web API/登录、观察价止盈）
+tests/                      49 个离线测试（策略、paper 撮合、状态机、配置、FAK 解析、Web API/登录、观察价止盈、价格止损）
 docs/strategy_5m_all.md     详细设计与口径
 ```
 
@@ -264,6 +281,7 @@ docs/strategy_5m_all.md     详细设计与口径
 | `MAX_SPREAD_ABS` | 0（关闭） | 点差超过该值时跳过入场 |
 | `SKIP_FEE_NEGATIVE` | false | 跳过 TP 费后为负的方向 |
 | `TP_EXECUTION_MODE` | observed | observed=按最优 bid 观察价成交；market=mid 触发后市价追价，可能低于 target |
+| `STOP_LOSS_PCT` | 0.20 | 60s 后的价格止损（entry×(1-SL)）；0=关闭，可按币覆盖 |
 | `FLATTEN_ON_EXIT` | false | 优雅退出时尽力卖出未平仓仓位 |
 | `/api/pause` / 页面按钮 | — | 运行时暂停新开仓；已有仓位照常管理 |
 | `/config` 启用开关 | 仅 BTC | 关闭某币只停新开仓，不影响已有仓位离场 |
@@ -278,7 +296,7 @@ docs/strategy_5m_all.md     详细设计与口径
 
 ```bash
 python -m pytest -q
-# 46 passed
+# 49 passed
 ```
 
 测试覆盖：文档参数加载/校验、费用公式与 breakeven、入场只在 0–60s、

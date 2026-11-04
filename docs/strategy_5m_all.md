@@ -126,7 +126,21 @@ target 口径显著更差，因此 live 默认 observed。`trades.jsonl` 的
 > 0.30，只能按 0.30 成交；点差、滑点、薄盘口和 240s 强平仍可能吃掉 edge。
 > 详见 [观察止盈](观察止盈.md)。
 
-### 3.3 240s 强平
+### 3.3 价格止损（默认 20%，60s 后启用）
+
+- 只在 `60 <= t < 240` 检查；0–60s 是观察窗口，不设价格止损。
+- 触发：观察价 `mid <= position.sl_price`，其中
+  `sl_price = 实际成交价 × (1 - STOP_LOSS_PCT)`。
+- 默认 `STOP_LOSS_PCT=0.20`；0 表示关闭；可在 `/config` 页按币设置。
+- 执行：可成交 FAK 卖出，限价在 bid 下方 `SLIPPAGE_PCT`（默认 2%），
+  成交价取当时最优 bid；`reason="stop_loss"`。
+- `sl_price` 在入场时写入 `Position` / `state.json`，重启后沿用；旧仓位若
+  没有 `sl_price`，接管时按当前配置补算。
+- 回测依据：`btc_5m_strategy1_recheck_2026-11-04.md` 中 −20% 止损从 t=60s
+  启动可把 0.25/10% 从 +5,685U 提升到 +7,002U、回撤 439→302U；从入场就
+  止损反而更差，因此本实现固定在 60s 后启用。
+
+### 3.4 240s 强平
 
 - 从 `t >= 240` 起，每秒尝试一次；
 - 限价 = `max(0.01, floor(bid * (1 - SLIPPAGE_PCT/100)))`，
@@ -135,7 +149,7 @@ target 口径显著更差，因此 live 默认 observed。`trades.jsonl` 的
 - 成功则 `reason="time_exit"`；
 - `t > 295` 仍未卖出 -> `SETTLE_PENDING`，由结算循环按 Gamma 的 0/1 结算价记账。
 
-### 3.4 部分成交
+### 3.5 部分成交
 
 FAK 可能只成交一部分：
 
@@ -310,7 +324,7 @@ FastAPI + uvicorn 跑在策略的同一个事件循环里，端口 **8033**
 |---|---|
 | `/` | 控制台：模式、运行时长、今日/累计 PnL、胜率、盈亏比、手续费；7 币窗口/持仓/浮盈；暂停；全部平仓 |
 | `/trades` | 交易明细（分页 + asset/reason/mode 筛选）、分币种统计、按日统计 |
-| `/config` | 5 分钟时间轴（入场/止盈/强平/结算）；7 币启用开关、方向、entry、TP%、每笔 U；TP 费后收益；恢复默认 |
+| `/config` | 5 分钟时间轴（入场/止盈/价格止损/强平/结算）；7 币启用开关、方向、entry、TP%、止损%、每笔 U（列表）；TP 费后收益；恢复默认 |
 
 ### 8.3 运行时参数
 
@@ -351,6 +365,7 @@ FastAPI + uvicorn 跑在策略的同一个事件循环里，端口 **8033**
 | `KILL_SWITCH_FILE` | 文件存在即停新开仓 |
 | `MAX_SPREAD_ABS` | 点差过滤（默认关闭） |
 | `SKIP_FEE_NEGATIVE` | 跳过 TP 费后为负的方向 |
+| `STOP_LOSS_PCT` | 60s 后价格止损，默认 0.20；0=关闭，可按币覆盖 |
 | `STALE_PRICE_MAX_AGE_S` | 报价太旧不开仓 |
 | `EXIT_STALE_PRICE_MAX_AGE_S` | 出场允许更旧的报价（不能因为数据旧就不止损） |
 | `FLATTEN_ON_EXIT` | 优雅退出时尽力平仓 |
@@ -396,18 +411,19 @@ FastAPI + uvicorn 跑在策略的同一个事件循环里，端口 **8033**
 
 ## 12. 测试矩阵
 
-`python -m pytest -q`（46 个测试）：
+`python -m pytest -q`（49 个测试）：
 
 - `test_config.py`：文档默认参数、非法阈值、费后为负识别；
 - `test_strategy.py`：0–60s 入场、60s 后 TP、bid 触发、observed/market
-  两种触发、240s 强平、部分成交、结算、stale quote；
+  两种触发、60s 后价格止损、SL=0 关闭、240s 强平、部分成交、结算、
+  stale quote；
 - `test_paper_broker.py`：ask/bid 阶梯、限价约束、WS 兜底；
 - `test_market_ws.py`：BBO / REST midpoint / 过期报价的优先级；
 - `test_market_service.py`：当前/下一窗口发现、边界推进、预发现；
 - `test_state.py`：state 原子读写、trade JSONL；
-- `test_runner.py`：AssetRunner 端到端“入场 → TP”、“入场 → 240s 强平”，
-  观察价跳空成交（target 0.264、实际 0.42），以及重启后过期仓位的
-  Gamma 结算记账；
+- `test_runner.py`：AssetRunner 端到端“入场 → TP”、“入场 → 价格止损”、
+  “入场 → 240s 强平”，观察价跳空成交（target 0.264、实际 0.42），以及
+  重启后过期仓位的 Gamma 结算记账；
 - `test_clob_parse.py`：FAK 买卖回报的 taking/making、base units 归一、
   fills 兜底解析；
 - `test_runtime_config.py`：默认仅 BTC、启用/参数覆盖、持久化/重载、重置、非法值；

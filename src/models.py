@@ -124,7 +124,8 @@ class Position:
     cost_usd: float            # share notional spent at entry (excl. fee)
     entry_fee: float
     tp_price: float
-    stake_usd: float
+    sl_price: float = 0.0      # 0 = price stop disabled
+    stake_usd: float = 0.0
     up_token: str = ""
     down_token: str = ""
     tick_size: float = 0.01
@@ -159,6 +160,7 @@ class Position:
             "cost_usd": round(self.cost_usd, 8),
             "entry_fee": round(self.entry_fee, 8),
             "tp_price": round(self.tp_price, 8),
+            "sl_price": round(self.sl_price, 8),
             "stake_usd": round(self.stake_usd, 4),
             "up_token": self.up_token,
             "down_token": self.down_token,
@@ -185,6 +187,7 @@ class Position:
             cost_usd=float(raw["cost_usd"]),
             entry_fee=float(raw.get("entry_fee", 0.0)),
             tp_price=float(raw["tp_price"]),
+            sl_price=float(raw.get("sl_price", 0.0) or 0.0),
             stake_usd=float(raw.get("stake_usd", raw.get("cost_usd", 0.0))),
             up_token=str(raw.get("up_token", "")),
             down_token=str(raw.get("down_token", "")),
@@ -205,6 +208,7 @@ class SidePlan:
     entry_thresh: float
     tp_pct: float
     stake_usd: float
+    stop_loss_pct: float = 0.20
 
     @property
     def key(self) -> str:
@@ -235,6 +239,7 @@ class TradeRecord:
     pnl_net: float
     stake_usd: float
     mode: str                  # paper / live
+    sl_price: float = 0.0      # 0 = no price stop
     note: str = ""
 
     def to_dict(self) -> dict[str, Any]:
@@ -259,6 +264,7 @@ class TradeRecord:
             "pnl_net": round(self.pnl_net, 8),
             "stake_usd": self.stake_usd,
             "mode": self.mode,
+            "sl_price": round(self.sl_price, 8),
             "note": self.note,
         }
 

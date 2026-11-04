@@ -180,6 +180,48 @@ async def test_take_profit_fills_at_observed_gap(tmp_path):
     assert trades[0].pnl_gross > 1.0
 
 
+class StopBroker(FakeBroker):
+    async def sell(self, token_id, shares, limit_price, tick_size):
+        self.sells.append((token_id, shares, limit_price))
+        price = 0.18
+        return Fill(
+            token_id, "SELL", shares, shares * price, price, 0.03, T0 + 70
+        )
+
+
+@pytest.mark.asyncio
+async def test_price_stop_loss_after_60s(tmp_path):
+    settings = _settings()
+    cache = PriceCache()
+    cache.set_best_bid_ask("down-token", 0.23, 0.24, ts=T0 + 10)
+    broker = StopBroker()
+    trades = []
+    runner = AssetRunner(
+        settings.assets[0],
+        settings,
+        broker,
+        cache,
+        FakeMarketService(_window()),
+        StateStore(tmp_path),
+        can_enter=lambda: (True, "ok"),
+        on_trade=trades.append,
+        on_state_change=lambda: None,
+    )
+    await runner.tick(T0 + 10)  # entry 0.24 -> SL 0.192
+    # Before 60s: a dip below the stop must NOT exit.
+    cache.set_best_bid_ask("down-token", 0.18, 0.19, ts=T0 + 50)
+    await runner.tick(T0 + 50)
+    assert broker.sells == []
+    # At/after 60s: observed mid 0.185 <= 0.192 -> stop at the bid.
+    cache.set_best_bid_ask("down-token", 0.18, 0.19, ts=T0 + 70)
+    await runner.tick(T0 + 70)
+    assert len(broker.sells) == 1
+    assert trades and trades[0].reason == "stop_loss"
+    assert trades[0].exit_price == pytest.approx(0.18)
+    assert trades[0].sl_price == pytest.approx(0.192)
+    assert trades[0].pnl_net < 0
+
+
 @pytest.mark.asyncio
 async def test_no_entry_after_60s(tmp_path):
     settings = _settings()

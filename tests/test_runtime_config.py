@@ -30,6 +30,7 @@ def test_update_enable_eth_and_persist(tmp_path):
                     "sides": "BOTH",
                     "entry_thresh": 0.20,
                     "tp_pct": 0.30,
+                    "stop_loss_pct": 0.15,
                     "stake_usd": 5.0,
                 }
             }
@@ -40,6 +41,7 @@ def test_update_enable_eth_and_persist(tmp_path):
     assert eth.sides == (Side.UP, Side.DOWN)
     assert eth.entry_thresh == pytest.approx(0.20)
     assert eth.tp_pct == pytest.approx(0.30)
+    assert eth.stop_loss_pct == pytest.approx(0.15)
     assert eth.stake_usd == pytest.approx(5.0)
 
     reloaded = RuntimeConfig(tmp_path / "runtime_config.json", load_settings().assets)

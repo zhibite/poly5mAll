@@ -130,6 +130,7 @@ input[type="checkbox"] { width:18px; height:18px; accent-color:#7c3aed; }
 .timing-card { background:#0a0a14; border:1px solid #1e1e3a;
                border-left:3px solid #7c3aed; border-radius:8px; padding:12px 14px; }
 .timing-card.tp { border-left-color:#10b981; }
+.timing-card.sl-price { border-left-color:#ef4444; }
 .timing-card.sl { border-left-color:#f59e0b; }
 .timing-card.settle { border-left-color:#4b5563; }
 .timing-card .t-label { font-size:12px; color:#9ca3af; font-weight:600; }
