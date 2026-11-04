@@ -177,6 +177,10 @@ async def test_take_profit_fills_at_observed_gap(tmp_path):
     assert trades[0].tp_price == pytest.approx(0.264)
     # The fill is the observed executable price, not the target.
     assert trades[0].exit_price == pytest.approx(0.42)
+    assert trades[0].tp_observed_price == pytest.approx(0.425)
+    assert trades[0].tp_observed_bid == pytest.approx(0.42)
+    assert trades[0].tp_observed_ask == pytest.approx(0.43)
+    assert trades[0].tp_observed_source == "ws_bba"
     assert trades[0].pnl_gross > 1.0
 
 

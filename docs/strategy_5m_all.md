@@ -128,6 +128,12 @@ target 口径显著更差，因此 live 默认 observed。`trades.jsonl` 的
 > 0.30，只能按 0.30 成交；点差、滑点、薄盘口和 240s 强平仍可能吃掉 edge。
 > 详见 [观察止盈](观察止盈.md)。
 
+**数据积累**：每笔 TP 在 `trades.jsonl` 中记录 `tp_price`（目标）、
+`tp_observed_price`（触发时 mid）、`tp_observed_bid/ask`、
+`tp_observed_source/ts`、`exit_price`（实际成交）。`/trades` 页展示
+TP 目标 / 观察价 / 实际卖价，并统计“观察价 > 目标”和“实际成交 > 目标”的
+笔数与比例，用于判断实盘有多少是真正的越价止盈。
+
 ### 3.3 价格止损（BTC 20%，其他币默认关闭）
 
 - 只在 `60 <= t < 240` 检查；0–60s 是观察窗口，不设价格止损。
@@ -350,6 +356,9 @@ FastAPI + uvicorn 跑在策略的同一个事件循环里，端口 **8033**
 - 最佳/最差单笔。
 
 `/api/trades` 支持 `limit/offset/asset/reason/mode`，按 exit_ts 倒序分页。
+`/api/stats` 另含 `tp_execution`：TP 笔数、有观察数据的笔数、观察价 > 目标
+笔数/比例、实际成交 > 目标笔数/比例、平均观察越价、平均实际越价、实际成交
+vs 观察价（价格与 bps）。
 
 ### 8.5 鉴权与操作
 

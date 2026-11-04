@@ -133,6 +133,13 @@ class Position:
     sold_shares: float = 0.0
     exit_proceeds: float = 0.0
     exit_fees: float = 0.0
+    # Observed quote at the (last) TP sell attempt: for comparing the
+    # observed take-profit price with the actual fill.
+    tp_observed_price: float = 0.0
+    tp_observed_bid: float = 0.0
+    tp_observed_ask: float = 0.0
+    tp_observed_source: str = ""
+    tp_observed_ts: float = 0.0
 
     @property
     def remaining_shares(self) -> float:
@@ -169,6 +176,11 @@ class Position:
             "sold_shares": round(self.sold_shares, 8),
             "exit_proceeds": round(self.exit_proceeds, 8),
             "exit_fees": round(self.exit_fees, 8),
+            "tp_observed_price": round(self.tp_observed_price, 8),
+            "tp_observed_bid": round(self.tp_observed_bid, 8),
+            "tp_observed_ask": round(self.tp_observed_ask, 8),
+            "tp_observed_source": self.tp_observed_source,
+            "tp_observed_ts": round(self.tp_observed_ts, 3),
         }
 
     @classmethod
@@ -196,6 +208,11 @@ class Position:
             sold_shares=float(raw.get("sold_shares", 0.0)),
             exit_proceeds=float(raw.get("exit_proceeds", 0.0)),
             exit_fees=float(raw.get("exit_fees", 0.0)),
+            tp_observed_price=float(raw.get("tp_observed_price", 0.0) or 0.0),
+            tp_observed_bid=float(raw.get("tp_observed_bid", 0.0) or 0.0),
+            tp_observed_ask=float(raw.get("tp_observed_ask", 0.0) or 0.0),
+            tp_observed_source=str(raw.get("tp_observed_source", "") or ""),
+            tp_observed_ts=float(raw.get("tp_observed_ts", 0.0) or 0.0),
         )
 
 
@@ -240,6 +257,11 @@ class TradeRecord:
     stake_usd: float
     mode: str                  # paper / live
     sl_price: float = 0.0      # 0 = no price stop
+    tp_observed_price: float = 0.0
+    tp_observed_bid: float = 0.0
+    tp_observed_ask: float = 0.0
+    tp_observed_source: str = ""
+    tp_observed_ts: float = 0.0
     note: str = ""
 
     def to_dict(self) -> dict[str, Any]:
@@ -265,6 +287,11 @@ class TradeRecord:
             "stake_usd": self.stake_usd,
             "mode": self.mode,
             "sl_price": round(self.sl_price, 8),
+            "tp_observed_price": round(self.tp_observed_price, 8),
+            "tp_observed_bid": round(self.tp_observed_bid, 8),
+            "tp_observed_ask": round(self.tp_observed_ask, 8),
+            "tp_observed_source": self.tp_observed_source,
+            "tp_observed_ts": round(self.tp_observed_ts, 3),
             "note": self.note,
         }
 

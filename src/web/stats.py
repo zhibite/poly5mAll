@@ -68,6 +68,81 @@ def _group(
     return {name: _bucket(items) for name, items in sorted(buckets.items())}
 
 
+def _tp_execution(rows: list[dict[str, Any]]) -> dict[str, Any]:
+    """Observed-vs-actual take-profit analysis.
+
+    ``tp_observed_price`` is the quote mid captured on the TP sell attempt;
+    ``exit_price`` is the actual fill.  Legacy trades without the field are
+    counted as missing observation, not as zero-edge trades.
+    """
+    tp_rows = [
+        r for r in rows if str(r.get("reason", "")).lower() == "tp"
+    ]
+    observed = [
+        r for r in tp_rows if _num(r, "tp_observed_price") > 0
+    ]
+    n = len(observed)
+
+    def _avg(values: list[float]) -> float:
+        return round(sum(values) / len(values), 8) if values else 0.0
+
+    observed_edges = [
+        _num(r, "tp_observed_price") - _num(r, "tp_price")
+        for r in observed
+    ]
+    actual_edges = [
+        _num(r, "exit_price") - _num(r, "tp_price") for r in observed
+    ]
+    fill_vs_observed = [
+        _num(r, "exit_price") - _num(r, "tp_observed_price")
+        for r in observed
+    ]
+    observed_bps = [
+        (_num(r, "tp_observed_price") / _num(r, "tp_price") - 1.0)
+        * 10000.0
+        for r in observed
+        if _num(r, "tp_price") > 0
+    ]
+    actual_bps = [
+        (_num(r, "exit_price") / _num(r, "tp_price") - 1.0)
+        * 10000.0
+        for r in observed
+        if _num(r, "tp_price") > 0
+    ]
+    fill_vs_observed_bps = [
+        (_num(r, "exit_price") / _num(r, "tp_observed_price") - 1.0)
+        * 10000.0
+        for r in observed
+        if _num(r, "tp_observed_price") > 0
+    ]
+    observed_above = sum(
+        1
+        for r in observed
+        if _num(r, "tp_observed_price") > _num(r, "tp_price") + 1e-9
+    )
+    actual_above = sum(
+        1
+        for r in observed
+        if _num(r, "exit_price") > _num(r, "tp_price") + 1e-9
+    )
+
+    return {
+        "tp_trades": len(tp_rows),
+        "with_observation": n,
+        "missing_observation": len(tp_rows) - n,
+        "observed_above_target": observed_above,
+        "observed_above_rate": (observed_above / n) if n else None,
+        "actual_above_target": actual_above,
+        "actual_above_rate": (actual_above / n) if n else None,
+        "avg_observed_edge": _avg(observed_edges),
+        "avg_actual_edge": _avg(actual_edges),
+        "avg_fill_vs_observed": _avg(fill_vs_observed),
+        "avg_observed_edge_bps": _avg(observed_bps),
+        "avg_actual_edge_bps": _avg(actual_bps),
+        "avg_fill_vs_observed_bps": _avg(fill_vs_observed_bps),
+    }
+
+
 def compute_stats(trades: list[dict[str, Any]]) -> dict[str, Any]:
     rows = sorted(
         trades, key=lambda r: _num(r, "exit_ts")
@@ -93,6 +168,7 @@ def compute_stats(trades: list[dict[str, Any]]) -> dict[str, Any]:
         },
         "best_trade": best,
         "worst_trade": worst,
+        "tp_execution": _tp_execution(rows),
     }
 
 

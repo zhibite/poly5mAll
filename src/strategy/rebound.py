@@ -232,6 +232,7 @@ class SideRuntime:
         exit_fee = position.exit_fees
         pnl_gross = exit_usdc - position.cost_usd
         pnl_net = pnl_gross - position.entry_fee - exit_fee
+        observed = reason == "tp"
         return TradeRecord(
             position_id=position.position_id,
             asset=position.asset,
@@ -258,6 +259,13 @@ class SideRuntime:
             stake_usd=position.stake_usd,
             mode=mode,
             sl_price=position.sl_price,
+            tp_observed_price=position.tp_observed_price if observed else 0.0,
+            tp_observed_bid=position.tp_observed_bid if observed else 0.0,
+            tp_observed_ask=position.tp_observed_ask if observed else 0.0,
+            tp_observed_source=(
+                position.tp_observed_source if observed else ""
+            ),
+            tp_observed_ts=position.tp_observed_ts if observed else 0.0,
         )
 
     def on_exit_missed(self, now: float) -> None:

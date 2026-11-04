@@ -47,7 +47,8 @@ class FakeRunner:
 
 
 def _trade(
-    asset: str, side: str, net: float, gross: float, fee: float, ts: float
+    asset: str, side: str, net: float, gross: float, fee: float, ts: float,
+    *, observed: float | None = None,
 ) -> TradeRecord:
     return TradeRecord(
         position_id=f"{asset}-{side}-{int(ts)}",
@@ -70,6 +71,11 @@ def _trade(
         pnl_net=net,
         stake_usd=10.0,
         mode="paper",
+        tp_observed_price=observed or 0.0,
+        tp_observed_bid=observed or 0.0,
+        tp_observed_ask=(observed + 0.01) if observed else 0.0,
+        tp_observed_source="test" if observed else "",
+        tp_observed_ts=ts if observed else 0.0,
     )
 
 
@@ -79,7 +85,9 @@ def client(tmp_path):
     runtime = RuntimeConfig(tmp_path / "runtime_config.json", settings.assets)
     store = StateStore(tmp_path)
     now = time.time()
-    store.append_trade(_trade("BTC", "DOWN", 1.0, 1.5, 0.5, now))
+    store.append_trade(
+        _trade("BTC", "DOWN", 1.0, 1.5, 0.5, now, observed=0.29)
+    )
     store.append_trade(_trade("ETH", "DOWN", -0.5, -0.3, 0.2, now - 10))
     runner = FakeRunner()
     app = create_app(settings, runner, store, runtime)
@@ -165,6 +173,13 @@ def test_trades_stats_and_filters(client):
     assert stats["total"]["net"] == pytest.approx(0.5)
     assert "BTC" in stats["by_asset"]
     assert stats["today"]["trades"] == 2
+    tp = stats["tp_execution"]
+    assert tp["tp_trades"] == 2
+    assert tp["with_observation"] == 1
+    assert tp["missing_observation"] == 1
+    assert tp["observed_above_target"] == 1
+    assert tp["actual_above_target"] == 1
+    assert tp["avg_observed_edge"] == pytest.approx(0.015)
 
 
 def test_pause_and_flatten(client):

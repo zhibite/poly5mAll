@@ -72,17 +72,34 @@ _BODY = r"""
     <table>
       <thead><tr>
         <th>时间</th><th>资产</th><th>方向</th><th>原因</th><th>模式</th>
-        <th class="num">入场</th><th class="num">出场</th><th class="num">份额</th>
+        <th class="num">入场</th>
+        <th class="num">TP 目标</th><th class="num">观察价</th>
+        <th class="num">实际卖价</th><th class="num">份额</th>
         <th class="num">毛 PnL</th><th class="num">费用</th><th class="num">净 PnL</th>
         <th class="num">持有</th>
       </tr></thead>
-      <tbody id="rows"><tr><td colspan="12" class="no-data">加载中...</td></tr></tbody>
+      <tbody id="rows"><tr><td colspan="14" class="no-data">加载中...</td></tr></tbody>
     </table>
   </div>
   <div class="pager">
     <button id="prev" class="btn btn-ghost btn-sm">上一页</button>
     <span class="pager-info" id="page-info">--</span>
     <button id="next" class="btn btn-ghost btn-sm">下一页</button>
+  </div>
+</div>
+
+<div class="section">
+  <h2>观察价止盈统计</h2>
+  <div class="table-wrap">
+    <table>
+      <thead><tr><th>指标</th><th class="num">数值</th></tr></thead>
+      <tbody id="tp-exec"><tr><td colspan="2" class="no-data">加载中...</td></tr></tbody>
+    </table>
+  </div>
+  <div class="muted" style="font-size:11px;margin-top:8px;line-height:1.6">
+    观察价 = TP 触发时的中间价；实际卖价 = 订单簿成交价。
+    “观察价 &gt; 目标”表示触发时价格已越过 target（越价止盈）。
+    旧记录没有观察价字段，会单独计入“缺失观察数据”。
   </div>
 </div>
 
@@ -159,6 +176,8 @@ function renderStats(stats) {
   $('pf-sub').textContent = `均赢 ${money(a.avg_win, 2)} · 均亏 ${money(a.avg_loss, 2)}`;
   $('max-dd').textContent = fmt(a.max_drawdown, 2) + ' U';
 
+  renderTpExec(stats.tp_execution || {});
+
   const byAsset = Object.entries(stats.by_asset || {});
   $('by-asset').innerHTML = byAsset.map(([asset, s]) => `<tr>
     <td><b>${escapeHtml(asset)}</b></td>
@@ -192,16 +211,42 @@ function renderStats(stats) {
   </tr>`).join('') || '<tr><td colspan="6" class="no-data">暂无数据</td></tr>';
 }
 
+function renderTpExec(tp) {
+  const n = tp.with_observation || 0;
+  const rows = [
+    ['TP 笔数', String(tp.tp_trades || 0)],
+    ['有观察数据', `${n}${tp.missing_observation
+      ? ` · 旧记录缺失 ${tp.missing_observation}` : ''}`],
+    ['观察价 > 目标（越价止盈）',
+      `${tp.observed_above_target || 0} / ${n} · ${pct(tp.observed_above_rate)}`],
+    ['实际成交 > 目标',
+      `${tp.actual_above_target || 0} / ${n} · ${pct(tp.actual_above_rate)}`],
+    ['平均观察越价',
+      `${fmt(tp.avg_observed_edge, 4)} /份 · ${fmt(tp.avg_observed_edge_bps, 1)} bps`],
+    ['平均实际越价',
+      `${fmt(tp.avg_actual_edge, 4)} /份 · ${fmt(tp.avg_actual_edge_bps, 1)} bps`],
+    ['实际成交 vs 观察价',
+      `${fmt(tp.avg_fill_vs_observed, 4)} /份 · ${fmt(tp.avg_fill_vs_observed_bps, 1)} bps`],
+  ];
+  $('tp-exec').innerHTML = rows.map(([k, v]) => `<tr>
+    <td>${escapeHtml(k)}</td><td class="num">${escapeHtml(v)}</td>
+  </tr>`).join('') || '<tr><td colspan="2" class="no-data">暂无数据</td></tr>';
+}
+
 function renderTrades(payload) {
   const rows = payload.trades || [];
   TOTAL = payload.total || 0;
   $('trade-count').textContent = TOTAL;
   if (!rows.length) {
-    $('rows').innerHTML = '<tr><td colspan="12" class="no-data">暂无交易</td></tr>';
+    $('rows').innerHTML = '<tr><td colspan="14" class="no-data">暂无交易</td></tr>';
   } else {
     $('rows').innerHTML = rows.map((r) => {
       const fees = Number(r.entry_fee || 0) + Number(r.exit_fee || 0);
       const hold = Math.max(0, Number(r.exit_ts || 0) - Number(r.entry_ts || 0));
+      const isTp = String(r.reason || '').toLowerCase() === 'tp';
+      const target = isTp ? fmt(r.tp_price, 3) : '--';
+      const observed = isTp && Number(r.tp_observed_price) > 0
+        ? fmt(r.tp_observed_price, 3) : '--';
       return `<tr>
         <td>${utcFull(r.exit_ts)}</td>
         <td><b>${escapeHtml(r.asset)}</b></td>
@@ -209,6 +254,8 @@ function renderTrades(payload) {
         <td>${escapeHtml(reasonLabel(r.reason))}</td>
         <td><span class="pill ${r.mode === 'live' ? 'red' : 'blue'}">${r.mode === 'live' ? '实盘' : '纸面'}</span></td>
         <td class="num">${fmt(r.entry_price, 3)}</td>
+        <td class="num">${target}</td>
+        <td class="num">${observed}</td>
         <td class="num">${fmt(r.exit_price, 3)}</td>
         <td class="num">${fmt(r.shares, 2)}</td>
         <td class="num ${cls(r.pnl_gross)}">${money(r.pnl_gross, 4)}</td>

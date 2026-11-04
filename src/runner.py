@@ -388,6 +388,15 @@ class AssetRunner:
         side.status = SideStatus.EXITING
         side.last_exit_attempt = now
 
+        if reason == "tp" and quote is not None:
+            # Snapshot the observed quote at the (last) TP attempt.  The
+            # trade record compares this with the actual fill price.
+            pos.tp_observed_price = float(quote.mid)
+            pos.tp_observed_bid = float(quote.bid)
+            pos.tp_observed_ask = float(quote.ask)
+            pos.tp_observed_source = quote.source
+            pos.tp_observed_ts = now
+
         if reason == "tp":
             if self.settings.execution.tp_execution_mode == "market":
                 # Doc's option B: cross the book at market after the
