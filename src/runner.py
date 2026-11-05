@@ -385,9 +385,20 @@ class AssetRunner:
                     exc,
                 )
                 return
+            if quote is not None:
+                # Snapshot the quote that triggered the entry.  The fill
+                # is a taker ask; these fields record the spread it paid
+                # (and whether a valid BBO existed at decision time).
+                position.entry_quote_mid = float(quote.mid)
+                position.entry_quote_bid = float(quote.bid)
+                position.entry_quote_ask = float(quote.ask)
+                position.entry_quote_spread = float(quote.spread)
+                position.entry_quote_source = quote.source
+                position.entry_quote_ts = float(quote.updated_at)
             log.info(
                 "[{}] ENTRY {} {} shares={:.4f} px={:.4f} cost={:.4f} "
-                "fee={:.4f} tp={:.4f}",
+                "fee={:.4f} tp={:.4f} mid={:.4f} bid={:.4f} ask={:.4f} "
+                "spread={:.4f} src={}",
                 self.asset,
                 side.plan.side.value,
                 position.position_id,
@@ -396,6 +407,11 @@ class AssetRunner:
                 position.cost_usd,
                 position.entry_fee,
                 position.tp_price,
+                position.entry_quote_mid,
+                position.entry_quote_bid,
+                position.entry_quote_ask,
+                position.entry_quote_spread,
+                position.entry_quote_source,
             )
             self._on_state_change()
         finally:

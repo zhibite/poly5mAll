@@ -73,6 +73,22 @@ def test_stale_quote_blocks_entry():
     )
 
 
+def test_wide_spread_and_missing_bbo_block_entry():
+    side = SideRuntime(_plan(), _window())
+    g, f = GeneralConfig(), FeedConfig()
+    e = ExecutionConfig(max_spread_abs=0.01)
+
+    wide = _quote(T0 + 10, 0.23, bid=0.22, ask=0.24)  # spread 0.02
+    assert side.entry_block_reason(T0 + 10, wide, g, e, f) == "wide-spread"
+
+    # Missing BBO must not silently pass the spread filter.
+    no_bbo = _quote(T0 + 10, 0.23, bid=0.0, ask=0.0)
+    assert side.entry_block_reason(T0 + 10, no_bbo, g, e, f) == "wide-spread"
+
+    tight = _quote(T0 + 10, 0.24, bid=0.235, ask=0.245)  # spread 0.01
+    assert side.entry_block_reason(T0 + 10, tight, g, e, f) is None
+
+
 def test_tp_waits_until_60s_and_uses_bid():
     side = SideRuntime(_plan(), _window())
     g, e, f = GeneralConfig(), ExecutionConfig(), FeedConfig()

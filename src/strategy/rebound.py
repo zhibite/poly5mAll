@@ -78,11 +78,15 @@ class SideRuntime:
             return "stale-price"
         if quote.mid > self.plan.entry_thresh:
             return "above-threshold"
-        if (
-            execution.max_spread_abs > 0
-            and quote.spread > execution.max_spread_abs
-        ):
-            return "wide-spread"
+        if execution.max_spread_abs > 0:
+            # A missing/invalid BBO is not a tight spread: with the filter
+            # enabled we refuse to enter until both sides are quoted.
+            if quote.bid <= 0 or quote.ask <= 0 or quote.ask < quote.bid:
+                return "wide-spread"
+            # 1e-9 tolerance so an exact one-tick spread (e.g. 0.245 -
+            # 0.235 = 0.010000000000000009 in binary float) is allowed.
+            if quote.spread > execution.max_spread_abs + 1e-9:
+                return "wide-spread"
         return None
 
     # ── take profit ────────────────────────────────────────────────────
@@ -240,6 +244,12 @@ class SideRuntime:
                 position.tp_observed_source if observed else ""
             ),
             tp_observed_ts=position.tp_observed_ts if observed else 0.0,
+            entry_quote_mid=position.entry_quote_mid,
+            entry_quote_bid=position.entry_quote_bid,
+            entry_quote_ask=position.entry_quote_ask,
+            entry_quote_spread=position.entry_quote_spread,
+            entry_quote_source=position.entry_quote_source,
+            entry_quote_ts=position.entry_quote_ts,
         )
 
     def on_exit_missed(self, now: float) -> None:

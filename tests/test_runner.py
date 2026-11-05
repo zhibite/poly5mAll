@@ -104,7 +104,13 @@ async def test_entry_then_take_profit(tmp_path):
 
     await runner.tick(T0 + 10)
     assert len(broker.buys) == 1
-    assert runner.sides[0].position is not None
+    pos = runner.sides[0].position
+    assert pos is not None
+    assert pos.entry_quote_mid == pytest.approx(0.235)
+    assert pos.entry_quote_bid == pytest.approx(0.23)
+    assert pos.entry_quote_ask == pytest.approx(0.24)
+    assert pos.entry_quote_spread == pytest.approx(0.01)
+    assert pos.entry_quote_source == "ws_bba"
 
     # Price is above the 0.264 target at t=70s.
     cache.set_best_bid_ask("down-token", 0.30, 0.31, ts=T0 + 70)
@@ -113,6 +119,9 @@ async def test_entry_then_take_profit(tmp_path):
     assert len(trades) == 1
     assert trades[0].reason == "tp"
     assert trades[0].pnl_net > 0
+    assert trades[0].entry_quote_spread == pytest.approx(0.01)
+    assert trades[0].entry_quote_bid == pytest.approx(0.23)
+    assert trades[0].entry_quote_ask == pytest.approx(0.24)
 
 
 class RaisingBroker(FakeBroker):

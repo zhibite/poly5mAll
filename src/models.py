@@ -140,6 +140,15 @@ class Position:
     tp_observed_ask: float = 0.0
     tp_observed_source: str = ""
     tp_observed_ts: float = 0.0
+    # Quote snapshot used for the entry decision.  The fill price is a
+    # taker ask; these fields let trades.jsonl show the spread that the
+    # entry actually paid (and whether a valid BBO existed at all).
+    entry_quote_mid: float = 0.0
+    entry_quote_bid: float = 0.0
+    entry_quote_ask: float = 0.0
+    entry_quote_spread: float = 0.0
+    entry_quote_source: str = ""
+    entry_quote_ts: float = 0.0
 
     @property
     def remaining_shares(self) -> float:
@@ -181,6 +190,12 @@ class Position:
             "tp_observed_ask": round(self.tp_observed_ask, 8),
             "tp_observed_source": self.tp_observed_source,
             "tp_observed_ts": round(self.tp_observed_ts, 3),
+            "entry_quote_mid": round(self.entry_quote_mid, 8),
+            "entry_quote_bid": round(self.entry_quote_bid, 8),
+            "entry_quote_ask": round(self.entry_quote_ask, 8),
+            "entry_quote_spread": round(self.entry_quote_spread, 8),
+            "entry_quote_source": self.entry_quote_source,
+            "entry_quote_ts": round(self.entry_quote_ts, 3),
         }
 
     @classmethod
@@ -213,6 +228,14 @@ class Position:
             tp_observed_ask=float(raw.get("tp_observed_ask", 0.0) or 0.0),
             tp_observed_source=str(raw.get("tp_observed_source", "") or ""),
             tp_observed_ts=float(raw.get("tp_observed_ts", 0.0) or 0.0),
+            entry_quote_mid=float(raw.get("entry_quote_mid", 0.0) or 0.0),
+            entry_quote_bid=float(raw.get("entry_quote_bid", 0.0) or 0.0),
+            entry_quote_ask=float(raw.get("entry_quote_ask", 0.0) or 0.0),
+            entry_quote_spread=float(
+                raw.get("entry_quote_spread", 0.0) or 0.0
+            ),
+            entry_quote_source=str(raw.get("entry_quote_source", "") or ""),
+            entry_quote_ts=float(raw.get("entry_quote_ts", 0.0) or 0.0),
         )
 
 
@@ -262,6 +285,12 @@ class TradeRecord:
     tp_observed_ask: float = 0.0
     tp_observed_source: str = ""
     tp_observed_ts: float = 0.0
+    entry_quote_mid: float = 0.0
+    entry_quote_bid: float = 0.0
+    entry_quote_ask: float = 0.0
+    entry_quote_spread: float = 0.0
+    entry_quote_source: str = ""
+    entry_quote_ts: float = 0.0
     note: str = ""
 
     def to_dict(self) -> dict[str, Any]:
@@ -292,6 +321,12 @@ class TradeRecord:
             "tp_observed_ask": round(self.tp_observed_ask, 8),
             "tp_observed_source": self.tp_observed_source,
             "tp_observed_ts": round(self.tp_observed_ts, 3),
+            "entry_quote_mid": round(self.entry_quote_mid, 8),
+            "entry_quote_bid": round(self.entry_quote_bid, 8),
+            "entry_quote_ask": round(self.entry_quote_ask, 8),
+            "entry_quote_spread": round(self.entry_quote_spread, 8),
+            "entry_quote_source": self.entry_quote_source,
+            "entry_quote_ts": round(self.entry_quote_ts, 3),
             "note": self.note,
         }
 

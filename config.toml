@@ -83,9 +83,11 @@ EXIT_RETRY_S = 1.0
 # Forced-exit sell limit as a fraction below the current bid (2% = 2.0).
 SLIPPAGE_PCT = 2.0
 
-# Optional microstructure filter: skip an entry when (ask-bid)/mid exceeds
-# this.  0 disables the filter (doc parity).
-MAX_SPREAD_ABS = 0.0
+# Optional microstructure filter: skip an entry when the absolute spread
+# (ask - bid) exceeds this price.  0.01 = 1 cent; 0 disables the filter.
+# When enabled, a missing/invalid BBO is also treated as wide-spread.
+# Override without rebuilding with the MAX_SPREAD_ABS environment variable.
+MAX_SPREAD_ABS = 0.01
 
 # Optional risk limits.  0 disables.
 MAX_DAILY_LOSS_USD = 0.0
