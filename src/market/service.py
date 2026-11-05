@@ -276,10 +276,35 @@ class MarketService:
         if getter is None:
             return 0.01
         try:
-            tick = float(await getter(token_id))
+            tick = await getter(token_id)
         except Exception:  # noqa: BLE001
             return 0.01
+        if tick is None:
+            return 0.01
+        tick = float(tick)
         return tick if tick > 0 else 0.01
+
+    async def tick_size(
+        self, token_id: str, *, timeout_s: float = 1.0
+    ) -> float | None:
+        """Fresh exchange tick, or None when the query fails.
+
+        Discovery caches a tick per window, but the CLOB can change it
+        mid-window (observed 0.01 -> 0.001 during the forced-exit phase).
+        Exits use this to re-read the live value; on failure they keep the
+        cached tick rather than falling back to 0.01.
+        """
+        getter = getattr(self._pm, "get_tick_size", None)
+        if getter is None:
+            return None
+        try:
+            tick = await getter(token_id, timeout_s=timeout_s, default=None)
+        except Exception:  # noqa: BLE001
+            return None
+        if tick is None:
+            return None
+        tick = float(tick)
+        return tick if tick > 0 else None
 
     def _recompute(self, asset: str, state: AssetWindows, now: float) -> None:
         windows = sorted(state.known.values(), key=lambda w: w.start_ts)

@@ -37,9 +37,9 @@ class TickPM(FakePM):
         self.tick = tick
         self.tick_calls: list[str] = []
 
-    async def get_tick_size(self, token_id):
+    async def get_tick_size(self, token_id, *, timeout_s=3.0, default=0.01):
         self.tick_calls.append(token_id)
-        return self.tick
+        return self.tick if self.tick is not None else default
 
 
 @pytest.mark.asyncio
@@ -67,6 +67,22 @@ async def test_tick_size_comes_from_clob():
     assert ms.next("BTC").tick_size == pytest.approx(0.001)
     # One request per market, using the Up token.
     assert pm.tick_calls == ["up-a", "up-b"]
+
+
+@pytest.mark.asyncio
+async def test_fresh_tick_size_is_requeried():
+    pm = TickPM([], tick=0.001)
+    ms = MarketService(pm)
+    assert await ms.tick_size("up-a") == pytest.approx(0.001)
+
+
+@pytest.mark.asyncio
+async def test_fresh_tick_size_failure_returns_none():
+    pm = TickPM([], tick=None)
+    ms = MarketService(pm)
+    # None lets the exit keep its cached tick instead of falling back to
+    # 0.01 (which could be coarser than the live grid).
+    assert await ms.tick_size("up-a") is None
 
 
 @pytest.mark.asyncio

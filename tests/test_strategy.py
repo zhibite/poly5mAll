@@ -165,8 +165,21 @@ def test_settlement_booked_as_binary_payout():
     e = ExecutionConfig()
     entry = Fill("down-token", "BUY", 40.0, 10.0, 0.25, 0.0, T0 + 10)
     side.on_entry_fill(entry, T0 + 10, e)
+    pos = side.position
+    pos.entry_quote_mid = 0.235
+    pos.entry_quote_bid = 0.23
+    pos.entry_quote_ask = 0.24
+    pos.entry_quote_spread = 0.01
+    pos.entry_quote_source = "ws_bba"
+    pos.entry_quote_ts = T0 + 10
     record = side.on_settled(1.0, T0 + 300, "paper")
     assert record is not None
     assert record.reason == "settle"
     assert record.pnl_gross == pytest.approx(30.0)
+    # Settlement records keep the entry quote for spread analysis.
+    assert record.entry_quote_mid == pytest.approx(0.235)
+    assert record.entry_quote_bid == pytest.approx(0.23)
+    assert record.entry_quote_spread == pytest.approx(0.01)
+    assert record.entry_quote_source == "ws_bba"
+    assert record.entry_quote_ts == pytest.approx(T0 + 10)
     assert side.status is SideStatus.CLOSED

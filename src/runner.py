@@ -41,6 +41,11 @@ from src.strategy.rebound import SideRuntime
 
 log = get_logger("runner")
 
+# Re-read the exchange tick this often during a forced exit.  The CLOB
+# lowers the tick mid-window (0.01 -> 0.001 was observed in the final
+# minute), so the value cached at discovery is not enough for exits.
+_TICK_REFRESH_S = 5.0
+
 
 async def _always_reserve_entry(side: Side) -> bool:
     return True
@@ -445,6 +450,22 @@ class AssetRunner:
         # may differ between 5m markets (0.01 vs 0.001).
         tick = pos.tick_size if pos.tick_size > 0 else self.window.tick_size
 
+        # Refresh the tick when the bid is below the cached grid (the CLOB
+        # has lowered it since discovery), and periodically during the
+        # forced exit (also covers a missing quote, where the limit is the
+        # tick itself).  A failed refresh keeps the cached value.
+        if (
+            (quote is not None and 0 < quote.bid < tick)
+            or (
+                reason != "tp"
+                and now - side.last_tick_refresh >= _TICK_REFRESH_S
+            )
+        ):
+            side.last_tick_refresh = now
+            fresh = await self._fresh_tick(pos)
+            if fresh is not None:
+                tick = fresh
+
         if reason == "tp":
             if self.settings.execution.tp_execution_mode == "market":
                 # Doc's option B: cross the book at market after the
@@ -491,6 +512,29 @@ class AssetRunner:
         if record is not None:
             self._on_trade(record)
         self._on_state_change()
+
+    async def _fresh_tick(self, pos: Position) -> float | None:
+        """Re-read the exchange tick and update the position."""
+        getter = getattr(self.market_service, "tick_size", None)
+        if getter is None:
+            return None
+        try:
+            tick = await getter(pos.token_id)
+        except Exception:  # noqa: BLE001
+            return None
+        if tick is None or tick <= 0:
+            return None
+        tick = float(tick)
+        if abs(tick - pos.tick_size) > 1e-12:
+            log.info(
+                "[{}] {} tick changed {:.4g} -> {:.4g}",
+                self.asset,
+                pos.position_id,
+                pos.tick_size,
+                tick,
+            )
+            pos.tick_size = tick
+        return tick
 
     def _force_exit_limit(self, quote: Quote | None, tick: float) -> float:
         """Marketable SELL limit at or below the observed bid.
@@ -541,6 +585,9 @@ class AssetRunner:
             tick = pos.tick_size if pos.tick_size > 0 else (
                 self.window.tick_size if self.window else 0.01
             )
+            fresh = await self._fresh_tick(pos)
+            if fresh is not None:
+                tick = fresh
             try:
                 fill = await self.broker.sell(
                     pos.token_id,
@@ -1294,5 +1341,11 @@ def _settle_orphan(
         stake_usd=pos.stake_usd,
         mode=mode,
         sl_price=pos.sl_price,
+        entry_quote_mid=pos.entry_quote_mid,
+        entry_quote_bid=pos.entry_quote_bid,
+        entry_quote_ask=pos.entry_quote_ask,
+        entry_quote_spread=pos.entry_quote_spread,
+        entry_quote_source=pos.entry_quote_source,
+        entry_quote_ts=pos.entry_quote_ts,
         note="orphan settlement",
     )

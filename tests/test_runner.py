@@ -272,7 +272,7 @@ class BidBookBroker(FakeBroker):
         self.rejected: list[float] = []
 
     async def sell(self, token_id, shares, limit_price, tick_size):
-        self.sells.append((token_id, shares, limit_price))
+        self.sells.append((token_id, shares, limit_price, tick_size))
         if limit_price > self.bid + 1e-12:
             self.rejected.append(limit_price)
             return None
@@ -338,6 +338,55 @@ async def test_forced_exit_limit_never_above_bid(tmp_path):
 
     assert broker.rejected == []
     assert broker.sells and broker.sells[-1][2] == pytest.approx(0.001)
+    assert trades and trades[0].reason == "time_exit"
+
+
+class DynamicTickService(FakeMarketService):
+    """Market service whose CLOB tick has changed since discovery."""
+
+    def __init__(self, window, tick):
+        super().__init__(window)
+        self.tick = tick
+        self.tick_calls = 0
+
+    async def tick_size(self, token_id):
+        self.tick_calls += 1
+        return self.tick
+
+
+@pytest.mark.asyncio
+async def test_forced_exit_refreshes_midwindow_tick(tmp_path):
+    """The CLOB lowers the tick mid-window; the exit must follow it."""
+    settings = _settings()
+    cache = PriceCache()
+    cache.set_best_bid_ask("down-token", 0.23, 0.24, ts=T0 + 10)
+    broker = BidBookBroker(0.001)
+    trades = []
+    service = DynamicTickService(_window(), 0.001)
+    runner = AssetRunner(
+        settings.assets[0],
+        settings,
+        broker,
+        cache,
+        service,
+        StateStore(tmp_path),
+        can_enter=lambda side: (True, "ok"),
+        on_trade=trades.append,
+        on_state_change=lambda: None,
+    )
+    await runner.tick(T0 + 10)
+    pos = runner.sides[0].position
+    assert pos is not None and pos.tick_size == pytest.approx(0.01)
+
+    # By the forced exit the exchange grid is 0.001, not the 0.01 cached
+    # when the window was discovered.
+    cache.set_best_bid_ask("down-token", 0.001, 0.002, ts=T0 + 241)
+    await runner.tick(T0 + 241)
+
+    assert service.tick_calls >= 1
+    assert pos.tick_size == pytest.approx(0.001)
+    assert broker.sells[-1][2] == pytest.approx(0.001)
+    assert broker.sells[-1][3] == pytest.approx(0.001)
     assert trades and trades[0].reason == "time_exit"
 
 

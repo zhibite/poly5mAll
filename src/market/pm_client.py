@@ -6,10 +6,11 @@ Adapted from ``02.poly1h/src/market/pm_client.py`` for the 5m series:
     and its UP/DOWN token ids.
   * CLOB ``/midpoint`` supplies the stable strategy reference price.
   * CLOB ``/orderbook`` supplies executable depth for paper fills.
-  * ``/tick-size`` is queried once per new window: 5m tokens can quote on
-    a 0.001 grid, and a hard-coded 0.01 made forced exits unsellable below
-    one cent.  ``/fee-rate`` remains diagnostic; the configured fee rate
-    is used on the critical path.
+  * ``/tick-size`` is queried once per new window and re-read by exits:
+    5m tokens can quote on a 0.001 grid, and the CLOB can lower the tick
+    mid-window (observed 0.01 -> 0.001 near expiry).  A hard-coded 0.01
+    made forced exits unsellable below one cent.  ``/fee-rate`` remains
+    diagnostic; the configured fee rate is used on the critical path.
   * ``/events?slug=`` is reused after settlement to resolve a position
     whose 240 s market exit could not be filled.
 
@@ -264,20 +265,34 @@ class PolymarketClient:
         )
         return None
 
-    async def get_tick_size(self, token_id: str) -> float:
+    async def get_tick_size(
+        self,
+        token_id: str,
+        *,
+        timeout_s: float = 3.0,
+        default: float | None = 0.01,
+    ) -> float | None:
+        """Current ``minimum_tick_size`` for a token.
+
+        The CLOB can lower a market's tick while it is live (observed
+        0.01 -> 0.001 near expiry), so callers that need certainty can
+        pass ``default=None`` to distinguish a failed query from 0.01.
+        """
         c = await self._client()
         try:
             resp = await c.get(
                 f"{self.polymarket_host}/tick-size",
                 params={"token_id": token_id},
-                timeout=3.0,
+                timeout=timeout_s,
             )
             resp.raise_for_status()
-            raw = (resp.json() or {}).get("minimum_tick_size", 0.01)
+            raw = (resp.json() or {}).get("minimum_tick_size")
+            if raw is None:
+                return default
             tick = float(raw)
-            return tick if tick > 0 else 0.01
+            return tick if tick > 0 else default
         except Exception:  # noqa: BLE001
-            return 0.01
+            return default
 
     async def get_fee_rate_bps(self, token_id: str) -> int:
         """Taker fee in basis points, or -1 when the endpoint is unavailable."""

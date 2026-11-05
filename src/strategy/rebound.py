@@ -38,6 +38,7 @@ class SideRuntime:
     position: Position | None = None
     last_entry_attempt: float = 0.0
     last_exit_attempt: float = 0.0
+    last_tick_refresh: float = 0.0
     entry_attempts: int = 0
     exit_attempts: int = 0
     closed_reason: str = ""
@@ -298,6 +299,12 @@ class SideRuntime:
             stake_usd=position.stake_usd,
             mode=mode,
             sl_price=position.sl_price,
+            entry_quote_mid=position.entry_quote_mid,
+            entry_quote_bid=position.entry_quote_bid,
+            entry_quote_ask=position.entry_quote_ask,
+            entry_quote_spread=position.entry_quote_spread,
+            entry_quote_source=position.entry_quote_source,
+            entry_quote_ts=position.entry_quote_ts,
             note=note,
         )
 
