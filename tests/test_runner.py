@@ -6,7 +6,7 @@ import pytest
 
 from src.config import AssetConfig, load_settings
 from src.market.market_ws import PriceCache
-from src.models import Fill, MarketWindow, Position, Side
+from src.models import Fill, MarketWindow, Position, Side, SideStatus
 from src.runner import AssetRunner, MultiAssetRunner
 from src.runtime_config import RuntimeConfig
 from src.store import StateStore
@@ -252,6 +252,119 @@ async def test_forced_exit_at_240s(tmp_path):
     await runner.tick(T0 + 241)
     assert len(broker.sells) == 1
     assert trades and trades[0].reason == "time_exit"
+
+
+class BidBookBroker(FakeBroker):
+    """Fill a SELL only when the limit crosses the current top bid."""
+
+    def __init__(self, bid: float):
+        super().__init__()
+        self.bid = bid
+        self.rejected: list[float] = []
+
+    async def sell(self, token_id, shares, limit_price, tick_size):
+        self.sells.append((token_id, shares, limit_price))
+        if limit_price > self.bid + 1e-12:
+            self.rejected.append(limit_price)
+            return None
+        price = self.bid
+        return Fill(
+            token_id, "SELL", shares, shares * price, price, 0.0, T0 + 241
+        )
+
+
+@pytest.mark.asyncio
+async def test_forced_exit_sells_residual_at_subcent_bid(tmp_path):
+    """A 0.001 bid must not be blocked by a 0.01 sell limit."""
+    settings = _settings()
+    window = dataclasses.replace(_window(), tick_size=0.001)
+    cache = PriceCache()
+    cache.set_best_bid_ask("down-token", 0.23, 0.24, ts=T0 + 10)
+    broker = BidBookBroker(0.001)
+    trades = []
+    runner = AssetRunner(
+        settings.assets[0],
+        settings,
+        broker,
+        cache,
+        FakeMarketService(window),
+        StateStore(tmp_path),
+        can_enter=lambda side: (True, "ok"),
+        on_trade=trades.append,
+        on_state_change=lambda: None,
+    )
+    await runner.tick(T0 + 10)  # entry ~0.24
+    cache.set_best_bid_ask("down-token", 0.001, 0.002, ts=T0 + 241)
+    await runner.tick(T0 + 241)
+
+    assert broker.rejected == []
+    assert broker.sells and broker.sells[-1][2] == pytest.approx(0.001)
+    assert len(trades) == 1
+    assert trades[0].reason == "time_exit"
+    assert trades[0].exit_price == pytest.approx(0.001)
+
+
+@pytest.mark.asyncio
+async def test_forced_exit_limit_never_above_bid(tmp_path):
+    """Even with a stale 0.01 tick, do not clamp the limit above the bid."""
+    settings = _settings()
+    cache = PriceCache()
+    cache.set_best_bid_ask("down-token", 0.23, 0.24, ts=T0 + 10)
+    broker = BidBookBroker(0.001)
+    trades = []
+    runner = AssetRunner(
+        settings.assets[0],
+        settings,
+        broker,
+        cache,
+        FakeMarketService(_window()),  # tick_size default 0.01
+        StateStore(tmp_path),
+        can_enter=lambda side: (True, "ok"),
+        on_trade=trades.append,
+        on_state_change=lambda: None,
+    )
+    await runner.tick(T0 + 10)
+    cache.set_best_bid_ask("down-token", 0.001, 0.002, ts=T0 + 241)
+    await runner.tick(T0 + 241)
+
+    assert broker.rejected == []
+    assert broker.sells and broker.sells[-1][2] == pytest.approx(0.001)
+    assert trades and trades[0].reason == "time_exit"
+
+
+@pytest.mark.asyncio
+async def test_open_position_retired_at_window_flip_goes_to_settlement(tmp_path):
+    """A position still open when the next window binds must not be stranded."""
+    settings = _settings()
+    cache = PriceCache()
+    cache.set_best_bid_ask("down-token", 0.23, 0.24, ts=T0 + 10)
+    service = FakeMarketService(_window())
+    runner = AssetRunner(
+        settings.assets[0],
+        settings,
+        FakeBroker(),
+        cache,
+        service,
+        StateStore(tmp_path),
+        can_enter=lambda side: (True, "ok"),
+        on_trade=lambda r: None,
+        on_state_change=lambda: None,
+    )
+    await runner.tick(T0 + 10)
+    assert runner.sides[0].position is not None
+
+    # The next window opens before this side was ever marked for settlement.
+    service.window = dataclasses.replace(
+        _window(),
+        start_ts=T0 + 300,
+        end_ts=T0 + 600,
+        slug=f"btc-updown-5m-{T0 + 300}",
+    )
+    await runner.tick(T0 + 301)
+
+    retired = [s for s in runner.retired if s.position is not None]
+    assert len(retired) == 1
+    assert retired[0].status is SideStatus.SETTLE_PENDING
 
 
 class ResolvingPM:

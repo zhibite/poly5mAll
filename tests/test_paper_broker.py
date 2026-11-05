@@ -60,6 +60,18 @@ async def test_paper_buy_then_sell():
 
 
 @pytest.mark.asyncio
+async def test_paper_sell_fills_at_subcent_bid():
+    """A 0.001 residual bid is sellable once the real tick is used."""
+    pm = FakePM({"asks": [], "bids": [{"price": "0.001", "size": "100"}]})
+    broker = PaperBroker(pm, PriceCache(), include_fees=True)
+    sell = await broker.sell("tok", 100.0, 0.001, 0.001)
+    assert sell is not None
+    assert sell.shares == pytest.approx(100.0)
+    assert sell.price == pytest.approx(0.001)
+    assert sell.usdc == pytest.approx(0.10)
+
+
+@pytest.mark.asyncio
 async def test_paper_buy_rejects_ask_above_limit():
     pm = FakePM({"asks": [{"price": "0.16", "size": "100"}], "bids": []})
     broker = PaperBroker(pm, PriceCache())

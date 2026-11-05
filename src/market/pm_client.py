@@ -6,9 +6,10 @@ Adapted from ``02.poly1h/src/market/pm_client.py`` for the 5m series:
     and its UP/DOWN token ids.
   * CLOB ``/midpoint`` supplies the stable strategy reference price.
   * CLOB ``/orderbook`` supplies executable depth for paper fills.
-  * ``/tick-size`` and ``/fee-rate`` remain available for diagnostics; the
-    strategy uses the 0.01 grid and the configured fee rate on the critical
-    path so discovery never waits on two extra round trips at t=0.
+  * ``/tick-size`` is queried once per new window: 5m tokens can quote on
+    a 0.001 grid, and a hard-coded 0.01 made forced exits unsellable below
+    one cent.  ``/fee-rate`` remains diagnostic; the configured fee rate
+    is used on the critical path.
   * ``/events?slug=`` is reused after settlement to resolve a position
     whose 240 s market exit could not be filled.
 

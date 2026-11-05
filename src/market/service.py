@@ -167,7 +167,7 @@ class MarketService:
                 log.warning("[{}] discovery failed error={}", asset_u, exc)
                 return False
 
-            added = self._ingest(asset_u, raw, state, now_f)
+            added = await self._ingest(asset_u, raw, state, now_f)
             self._recompute(asset_u, state, now_f)
             if added:
                 log.info(
@@ -187,14 +187,14 @@ class MarketService:
                 )
             return bool(state.current and state.current.start_ts != old_start)
 
-    def _ingest(
+    async def _ingest(
         self,
         asset: str,
         raw_markets: list[dict],
         state: AssetWindows,
         now: float,
     ) -> int:
-        added = 0
+        candidates: list[tuple[int, str, str, str, str]] = []
         for market in raw_markets:
             try:
                 start = int(market.get("_window_start_ts") or 0)
@@ -215,25 +215,62 @@ class MarketService:
                 continue
             if start in state.known:
                 continue
+            candidates.append(
+                (
+                    start,
+                    slug,
+                    up_token,
+                    down_token,
+                    str(market.get("conditionId") or ""),
+                )
+            )
 
-            # 5m crypto Up/Down tokens quote on a 0.01 grid.  Fetching
-            # /tick-size and /fee-rate for every window would put four
-            # extra round trips on the critical path at t=0; the strategy
-            # uses 0.01 and the configured fee rate instead.
+        if not candidates:
+            return 0
+
+        # 5m crypto Up/Down tokens can quote on a 0.001 grid, not just
+        # 0.01.  Assuming 0.01 made forced exits impossible whenever the
+        # best bid sat below one cent (the sell limit was clamped to 0.01
+        # while the book offered 0.001).  Both outcomes of a market share
+        # the same tick, so one call per new window is enough; windows are
+        # normally discovered ahead of time, but even at startup this is
+        # part of discovery rather than the per-tick hot path.
+        ticks = await asyncio.gather(
+            *(self._tick_size(up) for _, _, up, _, _ in candidates),
+            return_exceptions=True,
+        )
+
+        added = 0
+        for (start, slug, up_token, down_token, condition_id), tick in zip(
+            candidates, ticks
+        ):
+            if not isinstance(tick, (int, float)) or float(tick) <= 0:
+                tick = 0.01
             window = MarketWindow(
                 asset=asset,
                 slug=slug,
                 start_ts=start,
-                end_ts=end,
+                end_ts=start + self._window_sec,
                 up_token=up_token,
                 down_token=down_token,
-                condition_id=str(market.get("conditionId") or ""),
-                tick_size=0.01,
+                condition_id=condition_id,
+                tick_size=float(tick),
                 fee_rate_bps=-1,
             )
             state.known[start] = window
             added += 1
         return added
+
+    async def _tick_size(self, token_id: str) -> float:
+        """Exchange tick for a token, falling back to the old 0.01 grid."""
+        getter = getattr(self._pm, "get_tick_size", None)
+        if getter is None:
+            return 0.01
+        try:
+            tick = float(await getter(token_id))
+        except Exception:  # noqa: BLE001
+            return 0.01
+        return tick if tick > 0 else 0.01
 
     def _recompute(self, asset: str, state: AssetWindows, now: float) -> None:
         windows = sorted(state.known.values(), key=lambda w: w.start_ts)

@@ -29,6 +29,19 @@ class FakePM:
         return list(self.markets)
 
 
+class TickPM(FakePM):
+    """CLOB stub that reports a sub-cent tick (the 5m market's real grid)."""
+
+    def __init__(self, markets, tick):
+        super().__init__(markets)
+        self.tick = tick
+        self.tick_calls: list[str] = []
+
+    async def get_tick_size(self, token_id):
+        self.tick_calls.append(token_id)
+        return self.tick
+
+
 @pytest.mark.asyncio
 async def test_current_and_next_discovered_together():
     pm = FakePM([_market(T0, "a"), _market(T0 + 300, "b")])
@@ -40,6 +53,20 @@ async def test_current_and_next_discovered_together():
     assert cur is not None and cur.start_ts == T0
     assert nxt is not None and nxt.start_ts == T0 + 300
     assert ms.active_tokens() == {"up-a", "down-a", "up-b", "down-b"}
+    # No get_tick_size on the client -> keep the old 0.01 grid.
+    assert cur.tick_size == pytest.approx(0.01)
+
+
+@pytest.mark.asyncio
+async def test_tick_size_comes_from_clob():
+    pm = TickPM([_market(T0, "a"), _market(T0 + 300, "b")], tick=0.001)
+    ms = MarketService(pm, window_sec=300, pre_discovery_lead_s=60,
+                       min_discovery_interval_s=0)
+    await ms.refresh("BTC", T0 + 10)
+    assert ms.current("BTC", T0 + 10).tick_size == pytest.approx(0.001)
+    assert ms.next("BTC").tick_size == pytest.approx(0.001)
+    # One request per market, using the Up token.
+    assert pm.tick_calls == ["up-a", "up-b"]
 
 
 @pytest.mark.asyncio

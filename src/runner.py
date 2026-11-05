@@ -138,6 +138,12 @@ class AssetRunner:
         ]
         for side in self.sides:
             if side.position is not None and not side.position.is_flat:
+                # The old window has ended, so this position can no longer
+                # be exited.  Mark it SETTLE_PENDING explicitly: a position
+                # retired while still HOLDING (e.g. the last sell attempt
+                # failed just as the window flipped) would otherwise never
+                # be picked up by the settlement loop.
+                side.status = SideStatus.SETTLE_PENDING
                 self.retired.append(side)
                 log.warning(
                     "[{}] retiring open {} position {} into settlement tracking",
@@ -197,6 +203,10 @@ class AssetRunner:
             side_rt.position = pos
             side_rt.status = SideStatus.HOLDING
             side_rt.last_exit_attempt = 0.0
+            # State written before the tick fix carries 0.01 even though
+            # these markets may quote on 0.001.
+            if window.tick_size > 0:
+                pos.tick_size = window.tick_size
             adopted.append(pos)
             log.info(
                 "[{}] adopted {} {} shares={:.4f} entry={:.4f} tp={:.4f}",
@@ -212,10 +222,11 @@ class AssetRunner:
                 self.pending_positions.remove(pos)
 
         log.info(
-            "[{}] window {} start={} sides={}",
+            "[{}] window {} start={} tick={:g} sides={}",
             self.asset,
             window.slug,
             utc_hms(window.start_ts),
+            window.tick_size,
             "+".join(s.plan.side.value for s in self.sides) or "-",
         )
         if self.settings.live:
@@ -413,25 +424,27 @@ class AssetRunner:
             pos.tp_observed_source = quote.source
             pos.tp_observed_ts = now
 
+        # The position carries its own market's tick: a runner can be
+        # exiting a retired position from the previous window, and ticks
+        # may differ between 5m markets (0.01 vs 0.001).
+        tick = pos.tick_size if pos.tick_size > 0 else self.window.tick_size
+
         if reason == "tp":
             if self.settings.execution.tp_execution_mode == "market":
                 # Doc's option B: cross the book at market after the
                 # observed mid crosses the target.  This can fill below
                 # the target if the bid has not caught up.
-                limit = self._force_exit_limit(quote, self.window.tick_size)
+                limit = self._force_exit_limit(quote, tick)
             else:
                 # Observed fill with a target floor: only fill at bids at
                 # or above the target; a gap to 0.42 fills at 0.42.
-                limit = max(
-                    self.window.tick_size,
-                    floor_tick(pos.tp_price, self.window.tick_size),
-                )
+                limit = max(tick, floor_tick(pos.tp_price, tick))
         else:
-            limit = self._force_exit_limit(quote, self.window.tick_size)
+            limit = self._force_exit_limit(quote, tick)
 
         try:
             fill = await self.broker.sell(
-                pos.token_id, pos.remaining_shares, limit, self.window.tick_size
+                pos.token_id, pos.remaining_shares, limit, tick
             )
         except Exception as exc:  # noqa: BLE001
             side.on_exit_missed(now)
@@ -464,11 +477,30 @@ class AssetRunner:
         self._on_state_change()
 
     def _force_exit_limit(self, quote: Quote | None, tick: float) -> float:
+        """Marketable SELL limit at or below the observed bid.
+
+        ``max(tick, floor_tick(bid * (1 - slip)))`` used to push the limit
+        above the bid whenever the bid was below the assumed tick: with a
+        0.01 tick and a 0.001 bid, the limit became 0.01, nothing could
+        cross it, and the position settled at 0 instead of selling its
+        residual value.  Round down, but never above the bid.
+        """
+        tick_f = float(tick) if tick and tick > 0 else 0.01
         slip = max(0.0, self.settings.execution.slippage_pct) / 100.0
         if quote is not None and quote.bid > 0:
-            floor = quote.bid * (1.0 - slip)
-            return max(tick, floor_tick(floor, tick))
-        return tick
+            bid = float(quote.bid)
+            limit = floor_tick(bid * (1.0 - slip), tick_f)
+            if limit <= 0:
+                # The slippage-adjusted price is below one tick: sell at
+                # the best bid itself rather than not at all.
+                limit = floor_tick(bid, tick_f)
+            if limit <= 0:
+                # Book price is below the assumed tick (stale/unknown
+                # tick); paper can still take the bid, and live rejects
+                # the order the same way it rejected the old limit.
+                limit = bid
+            return min(limit, bid)
+        return tick_f
 
     def _log_skip(
         self, reason: str, side: SideRuntime, now: float
@@ -490,12 +522,15 @@ class AssetRunner:
             if side.position is None or side.position.is_flat:
                 continue
             pos = side.position
+            tick = pos.tick_size if pos.tick_size > 0 else (
+                self.window.tick_size if self.window else 0.01
+            )
             try:
                 fill = await self.broker.sell(
                     pos.token_id,
                     pos.remaining_shares,
-                    self.window.tick_size if self.window else pos.tick_size,
-                    pos.tick_size,
+                    tick,
+                    tick,
                 )
             except Exception as exc:  # noqa: BLE001
                 log.warning("[{}] flatten sell error: {}", self.asset, exc)
