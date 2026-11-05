@@ -26,6 +26,12 @@ TICK_S = 0.25
 #   * CLOB market WebSocket for best bid/ask + last trade
 #   * CLOB /midpoint polled every REST_MIDPOINT_POLL_S as the stable fallback
 USE_WS = true
+# Independent CLOB WS connections (hash-sharded tokens).  1 = old single
+# connection; 7 reduces per-connection subscription load.
+WS_SHARDS = 7
+# REST /book fallback poll for current tokens, so bid/ask remain usable
+# when the WS is down.
+BOOK_POLL_S = 3.0
 REST_MIDPOINT_POLL_S = 2.0
 MARKET_DISCOVERY_S = 2.0
 # Start looking for the next 5m window this many seconds before it opens.

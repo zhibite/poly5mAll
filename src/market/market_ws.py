@@ -18,6 +18,7 @@ fallback alive when the WS has no book updates.
 from __future__ import annotations
 
 import asyncio
+import hashlib
 import json
 import time
 from dataclasses import dataclass, field
@@ -50,6 +51,8 @@ class PriceCache:
     bid_depth: dict[str, float] = field(default_factory=dict)
     ask_depth: dict[str, float] = field(default_factory=dict)
     tick_size: dict[str, float] = field(default_factory=dict)
+    # Which writer last set the BBO: "ws_bba" / "ws_book" / "rest_book".
+    book_source: dict[str, str] = field(default_factory=dict)
 
     # ── writers ────────────────────────────────────────────────────────
     def set_midpoint(self, token: str, price: float, ts: float | None = None) -> None:
@@ -90,6 +93,8 @@ class PriceCache:
         if 0.0 < a < 1.0:
             self.best_ask[token] = a
             self.best_ask_at[token] = now
+        if 0.0 < b < 1.0 or 0.0 < a < 1.0:
+            self.book_source[token] = "ws_bba"
 
     def set_book(
         self,
@@ -98,6 +103,7 @@ class PriceCache:
         asks: Any,
         levels: int = 5,
         ts: float | None = None,
+        source: str = "ws_book",
     ) -> None:
         if not token:
             return
@@ -112,6 +118,8 @@ class PriceCache:
             self.best_ask[token] = best_ask
             self.best_ask_at[token] = now
             self.ask_depth[token] = ask_depth
+        if best_bid > 0 or best_ask > 0:
+            self.book_source[token] = source
 
     def clear_token(self, token: str) -> None:
         for mapping in (
@@ -120,6 +128,7 @@ class PriceCache:
             self.best_bid, self.best_bid_at,
             self.best_ask, self.best_ask_at,
             self.bid_depth, self.ask_depth, self.tick_size,
+            self.book_source,
         ):
             mapping.pop(token, None)
 
@@ -158,7 +167,7 @@ class PriceCache:
                 ask=ask,
                 last=self.last_trade_price.get(token, 0.0),
                 updated_at=bba_at,
-                source="ws_bba",
+                source=self.book_source.get(token, "ws_bba"),
             )
 
         candidates: list[tuple[float, str, float]] = []
@@ -229,11 +238,13 @@ class MarketWS:
         cache: PriceCache,
         *,
         url: str = MARKET_WS_URL,
+        name: str = "ws",
         on_connect: Callable[[], None] | None = None,
         on_disconnect: Callable[[], None] | None = None,
     ) -> None:
         self._cache = cache
         self._url = url
+        self._name = name
         self._on_connect = on_connect
         self._on_disconnect = on_disconnect
         self._pending_tokens: set[str] = set()
@@ -272,8 +283,12 @@ class MarketWS:
         if self._running:
             return
         self._running = True
-        self._task = asyncio.create_task(self._run(), name="market-ws")
-        log.info("market_ws.started url={}", self._url)
+        self._task = asyncio.create_task(
+            self._run(), name=f"market-ws-{self._name}"
+        )
+        log.info(
+            "market_ws.started shard={} url={}", self._name, self._url
+        )
 
     async def stop(self) -> None:
         self._running = False
@@ -284,7 +299,7 @@ class MarketWS:
             except asyncio.CancelledError:
                 pass
             self._task = None
-        log.info("market_ws.stopped")
+        log.info("market_ws.stopped shard={}", self._name)
 
     # ── internals ──────────────────────────────────────────────────────
     async def _run(self) -> None:
@@ -297,7 +312,7 @@ class MarketWS:
                 ) as ws:
                     self._ws = ws
                     delay = 1.0
-                    log.info("market_ws.connected")
+                    log.info("market_ws.connected shard={}", self._name)
                     if self._pending_tokens:
                         await self._subscribe(ws, list(self._pending_tokens))
                     if self._on_connect:
@@ -309,7 +324,12 @@ class MarketWS:
             except asyncio.CancelledError:
                 break
             except Exception as exc:  # noqa: BLE001
-                log.warning("market_ws.error error={} retry_in={:.1f}s", exc, delay)
+                log.warning(
+                    "market_ws.error shard={} error={} retry_in={:.1f}s",
+                    self._name,
+                    exc,
+                    delay,
+                )
                 if self._on_disconnect:
                     self._on_disconnect()
                 await asyncio.sleep(delay)
@@ -324,7 +344,9 @@ class MarketWS:
             "custom_feature_enabled": True,
         }
         await ws.send(json.dumps(payload))
-        log.info("market_ws.subscribed n={}", len(tokens))
+        log.info(
+            "market_ws.subscribed shard={} n={}", self._name, len(tokens)
+        )
 
     async def _cycle_socket(self) -> None:
         ws = self._ws
@@ -420,3 +442,76 @@ def _float(value: Any) -> float:
         return float(value)
     except (TypeError, ValueError):
         return 0.0
+
+
+class MarketWSManager:
+    """Hash-shard the CLOB market WS across independent connections.
+
+    One connection carrying all seven assets was regularly reset with
+    ``1013 slow consumer: send buffer full``.  Tokens are assigned to a
+    fixed shard by their token id, so each connection subscribes to a
+    smaller subset and one bad shard cannot take down every asset.
+    """
+
+    def __init__(
+        self,
+        cache: PriceCache,
+        *,
+        shards: int = 7,
+        url: str = MARKET_WS_URL,
+    ) -> None:
+        n = max(1, int(shards))
+        self._cache = cache
+        self._shards: list[MarketWS] = [
+            MarketWS(cache, url=url, name=f"ws{i}") for i in range(n)
+        ]
+        self._running = False
+
+    async def start(self) -> None:
+        if self._running:
+            return
+        self._running = True
+        await asyncio.gather(*(s.start() for s in self._shards))
+        log.info(
+            "market_ws_manager.started shards={}", len(self._shards)
+        )
+
+    async def stop(self) -> None:
+        self._running = False
+        await asyncio.gather(
+            *(s.stop() for s in self._shards), return_exceptions=True
+        )
+        log.info("market_ws_manager.stopped")
+
+    def set_active_tokens(self, token_ids: set[str]) -> None:
+        n = len(self._shards)
+        buckets: list[set[str]] = [set() for _ in range(n)]
+        for token in token_ids:
+            if not token:
+                continue
+            digest = hashlib.md5(token.encode("utf-8")).digest()
+            idx = int.from_bytes(digest[:4], "big") % n
+            buckets[idx].add(token)
+        for shard, bucket in zip(self._shards, buckets):
+            shard.set_active_tokens(bucket)
+
+    @property
+    def subscribed_tokens(self) -> frozenset[str]:
+        out: set[str] = set()
+        for shard in self._shards:
+            out.update(shard.subscribed_tokens)
+        return frozenset(out)
+
+    @property
+    def shard_sizes(self) -> list[int]:
+        return [len(s.subscribed_tokens) for s in self._shards]
+
+    @property
+    def last_message_at(self) -> float:
+        return max(
+            (s.last_message_at for s in self._shards), default=0.0
+        )
+
+    @property
+    def shards(self) -> tuple[MarketWS, ...]:
+        return tuple(self._shards)

@@ -42,7 +42,7 @@ from src.execution.broker import LiveBroker, PaperBroker
 from src.execution.clob_client import CLOBClient
 from src.infra.logging import configure_logging, get_logger
 from src.infra.timeutil import utc_hms
-from src.market.market_ws import MarketWS, PriceCache
+from src.market.market_ws import MarketWSManager, PriceCache
 from src.market.pm_client import PolymarketClient
 from src.market.service import MarketService
 from src.runner import MultiAssetRunner
@@ -243,7 +243,7 @@ async def _run(settings: Settings, duration_s: float = 0.0) -> int:
                 )
     store = StateStore(settings.data_dir)
     ws = (
-        MarketWS(cache)
+        MarketWSManager(cache, shards=settings.feed.ws_shards)
         if settings.feed.use_ws
         else None
     )

@@ -148,6 +148,12 @@ class GeneralConfig:
 @dataclass(frozen=True)
 class FeedConfig:
     use_ws: bool = True
+    # Split CLOB WS subscriptions across independent connections so one
+    # slow-consumer reset cannot take down every asset.
+    ws_shards: int = 7
+    # REST /book fallback poll for current tokens (keeps bid/ask usable
+    # when the WS is down).
+    book_poll_s: float = 3.0
     rest_midpoint_poll_s: float = 2.0
     market_discovery_s: float = 2.0
     pre_discovery_lead_s: float = 60.0
@@ -383,6 +389,14 @@ def load_settings(config_path: str | Path | None = None) -> Settings:
 
     feed = FeedConfig(
         use_ws=_as_bool(_get(feed_raw, "USE_WS", True), True),
+        ws_shards=_env_int(
+            "WS_SHARDS",
+            int(_as_float(_get(feed_raw, "WS_SHARDS", 7), 7)),
+        ),
+        book_poll_s=_env_float(
+            "BOOK_POLL_S",
+            _as_float(_get(feed_raw, "BOOK_POLL_S", 3.0), 3.0),
+        ),
         rest_midpoint_poll_s=_as_float(
             _get(feed_raw, "REST_MIDPOINT_POLL_S", 2.0), 2.0
         ),
@@ -701,6 +715,10 @@ def validate_settings(settings: Settings) -> None:
         raise ConfigError("MIN_ENTRY_BID_DEPTH_USD must be >= 0")
     if e.max_same_side_positions < 0:
         raise ConfigError("MAX_SAME_SIDE_POSITIONS must be >= 0")
+    if settings.feed.ws_shards < 1:
+        raise ConfigError("WS_SHARDS must be >= 1")
+    if settings.feed.book_poll_s < 0.5:
+        raise ConfigError("BOOK_POLL_S must be >= 0.5")
     if e.max_spread_abs < 0:
         raise ConfigError("MAX_SPREAD_ABS must be >= 0")
 

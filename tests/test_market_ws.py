@@ -1,6 +1,8 @@
 from __future__ import annotations
 
-from src.market.market_ws import PriceCache
+import time
+
+from src.market.market_ws import PriceCache, MarketWSManager
 
 
 def test_quote_prefers_fresh_bba():
@@ -32,3 +34,27 @@ def test_quote_none_when_everything_stale():
     now = 1_000_000.0
     cache.set_midpoint("tok", 0.40, ts=now - 60)
     assert cache.quote("tok", now=now, max_age=15.0) is None
+
+
+def test_rest_book_source_is_visible():
+    cache = PriceCache()
+    cache.set_book(
+        "tok",
+        [{"price": "0.20", "size": "100"}],
+        [{"price": "0.30", "size": "100"}],
+        source="rest_book",
+    )
+    quote = cache.quote("tok", now=time.time())
+    assert quote is not None
+    assert quote.source == "rest_book"
+    assert quote.bid == 0.20 and quote.ask == 0.30
+
+
+def test_ws_manager_shards_tokens():
+    manager = MarketWSManager(PriceCache(), shards=7)
+    tokens = {f"token-{i}" for i in range(70)}
+    manager.set_active_tokens(tokens)
+    assert manager.subscribed_tokens == frozenset(tokens)
+    assert len(manager.shards) == 7
+    assert sum(manager.shard_sizes) == 70
+    assert all(size > 0 for size in manager.shard_sizes)

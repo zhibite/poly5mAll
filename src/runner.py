@@ -23,7 +23,7 @@ from src.runtime_config import RuntimeConfig
 from src.execution.broker import Broker, PaperBroker
 from src.infra.logging import get_logger
 from src.infra.timeutil import day_key, utc_hms, utc_iso
-from src.market.market_ws import MarketWS, PriceCache
+from src.market.market_ws import MarketWS, MarketWSManager, PriceCache
 from src.market.service import MarketService
 from src.models import (
     DailyStats,
@@ -652,7 +652,7 @@ class MultiAssetRunner:
         broker: Broker,
         store: StateStore,
         *,
-        market_ws: MarketWS | None = None,
+        market_ws: MarketWSManager | MarketWS | None = None,
         runtime: RuntimeConfig | None = None,
     ) -> None:
         self.settings = settings
@@ -840,6 +840,7 @@ class MultiAssetRunner:
         self._tasks = [
             asyncio.create_task(self._discovery_loop(), name="discovery"),
             asyncio.create_task(self._midpoint_loop(), name="midpoint"),
+            asyncio.create_task(self._book_loop(), name="book"),
             asyncio.create_task(self._status_loop(), name="status"),
             asyncio.create_task(self._reconcile_loop(), name="reconcile"),
         ]
@@ -986,6 +987,42 @@ class MultiAssetRunner:
             except Exception as exc:  # noqa: BLE001
                 log.exception("midpoint loop error: {}", exc)
             await asyncio.sleep(max(0.5, self.settings.feed.rest_midpoint_poll_s))
+
+    async def _book_loop(self) -> None:
+        """Poll REST /book for current tokens.
+
+        This keeps bid/ask (and depth) available when the market WS is
+        down, which matters because TP/entry decisions and the paper
+        broker all use the bid side for execution.
+        """
+        sem = asyncio.Semaphore(4)
+        while self._running:
+            try:
+                tokens = list(
+                    self.market_service.poll_tokens(
+                        self.open_tokens(), assets=self.enabled_assets()
+                    )
+                )
+                if tokens:
+                    async def one(token: str) -> None:
+                        async with sem:
+                            book = await self.pm.get_order_book(token)
+                            if isinstance(book, dict):
+                                self.cache.set_book(
+                                    token,
+                                    book.get("bids"),
+                                    book.get("asks"),
+                                    source="rest_book",
+                                )
+
+                    await asyncio.gather(
+                        *(one(t) for t in tokens), return_exceptions=True
+                    )
+            except asyncio.CancelledError:
+                raise
+            except Exception as exc:  # noqa: BLE001
+                log.exception("book loop error: {}", exc)
+            await asyncio.sleep(max(1.0, self.settings.feed.book_poll_s))
 
     async def _reconcile_loop(self) -> None:
         while self._running:
