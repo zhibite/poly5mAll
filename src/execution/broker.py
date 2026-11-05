@@ -127,12 +127,16 @@ class PaperBroker:
         fee_rate: float = 0.07,
         include_fees: bool = True,
         tick_size: float = 0.01,
+        require_two_sided_book: bool = True,
+        min_entry_bid_depth_usd: float = 5.0,
     ) -> None:
         self._pm = pm
         self._cache = price_cache
         self.fee_rate = float(fee_rate)
         self.include_fees = bool(include_fees)
         self.default_tick = float(tick_size)
+        self.require_two_sided_book = bool(require_two_sided_book)
+        self.min_entry_bid_depth_usd = float(min_entry_bid_depth_usd)
         self.holdings: dict[str, float] = {}
         self.fills = 0
         self.last_error = ""
@@ -142,7 +146,31 @@ class PaperBroker:
     async def buy(
         self, token_id: str, usd_amount: float, limit_price: float, tick_size: float
     ) -> Fill | None:
-        asks = await self._asks(token_id, limit_price, tick_size)
+        # The entry gate needs a two-sided REST book.  Do not fall back to
+        # the WS top-of-book here: its depth is unknown, which is exactly
+        # how the strategy ended up in tokens it could not exit.
+        bids, asks = await self._book(
+            token_id, allow_bba_fallback=not self.require_two_sided_book
+        )
+        if self.require_two_sided_book:
+            if not bids or not asks:
+                self._log_no_fill(
+                    token_id, "buy", "book not two-sided (no bid or no ask)"
+                )
+                return None
+            best_bid = max((p for p, _ in bids), default=0.0)
+            bid_depth_usd = sum(p * s for p, s in bids)
+            if best_bid <= 0:
+                self._log_no_fill(token_id, "buy", "best_bid <= 0")
+                return None
+            if bid_depth_usd < self.min_entry_bid_depth_usd:
+                self._log_no_fill(
+                    token_id,
+                    "buy",
+                    f"bid depth {bid_depth_usd:.2f}U < "
+                    f"{self.min_entry_bid_depth_usd:.2f}U",
+                )
+                return None
         if not asks:
             self._log_no_fill(
                 token_id, "buy", "no asks (book empty / WS unavailable)"
@@ -179,7 +207,9 @@ class PaperBroker:
     async def sell(
         self, token_id: str, shares: float, limit_price: float, tick_size: float
     ) -> Fill | None:
-        bids = await self._bids(token_id, limit_price, tick_size)
+        # Exits may use the WS top-of-book fallback; refusing to exit is
+        # worse than exiting on a single fresh bid.
+        bids, _ = await self._book(token_id, allow_bba_fallback=True)
         if not bids:
             self._log_no_fill(
                 token_id, "sell", "no bids (book empty / WS unavailable)"
@@ -237,32 +267,23 @@ class PaperBroker:
         )
 
     # ── book access ────────────────────────────────────────────────────
-    async def _asks(
-        self, token_id: str, limit_price: float, tick_size: float
-    ) -> list[tuple[float, float]]:
-        book = await self._pm.get_order_book(token_id)
-        if isinstance(book, dict):
-            asks = parse_levels(book.get("asks"))
-            if asks:
-                return asks
-        # Fallback: the WS top-of-book, if it is on the executable side.
-        quote = self._cache.quote(token_id)
-        if quote is not None and quote.ask > 0 and quote.ask <= limit_price + 1e-12:
-            return [(quote.ask, float("inf"))]
-        return []
-
-    async def _bids(
-        self, token_id: str, limit_price: float, tick_size: float
-    ) -> list[tuple[float, float]]:
+    async def _book(
+        self, token_id: str, *, allow_bba_fallback: bool
+    ) -> tuple[list[tuple[float, float]], list[tuple[float, float]]]:
         book = await self._pm.get_order_book(token_id)
         if isinstance(book, dict):
             bids = parse_levels(book.get("bids"))
-            if bids:
-                return bids
-        quote = self._cache.quote(token_id)
-        if quote is not None and quote.bid > 0 and quote.bid >= limit_price - 1e-12:
-            return [(quote.bid, float("inf"))]
-        return []
+            asks = parse_levels(book.get("asks"))
+        else:
+            bids, asks = [], []
+        if allow_bba_fallback:
+            quote = self._cache.quote(token_id)
+            if quote is not None:
+                if not bids and quote.bid > 0:
+                    bids = [(quote.bid, float("inf"))]
+                if not asks and quote.ask > 0:
+                    asks = [(quote.ask, float("inf"))]
+        return bids, asks
 
 
 # ---------------------------------------------------------------------------
@@ -273,16 +294,54 @@ class PaperBroker:
 class LiveBroker:
     mode = "live"
 
-    def __init__(self, clob: Any) -> None:
+    def __init__(
+        self,
+        clob: Any,
+        pm: Any = None,
+        *,
+        require_two_sided_book: bool = True,
+        min_entry_bid_depth_usd: float = 5.0,
+    ) -> None:
         if not clob.is_configured:
             raise RuntimeError(f"live broker unavailable: {clob.init_error}")
         self._clob = clob
+        self._pm = pm
+        self.require_two_sided_book = bool(require_two_sided_book)
+        self.min_entry_bid_depth_usd = float(min_entry_bid_depth_usd)
+        self._last_no_fill_log: dict[str, float] = {}
 
     async def buy(
         self, token_id: str, usd_amount: float, limit_price: float, tick_size: float
     ) -> Fill | None:
+        if self.require_two_sided_book:
+            if self._pm is None:
+                log.warning("live.buy_no_fill reason=no_pm_for_liquidity_check")
+                return None
+            book = await self._pm.get_order_book(token_id)
+            bids = parse_levels(book.get("bids")) if isinstance(book, dict) else []
+            asks = parse_levels(book.get("asks")) if isinstance(book, dict) else []
+            if not bids or not asks:
+                self._log_no_fill(token_id, "book not two-sided")
+                return None
+            depth = sum(p * s for p, s in bids)
+            if depth < self.min_entry_bid_depth_usd:
+                self._log_no_fill(
+                    token_id,
+                    f"bid depth {depth:.2f}U < "
+                    f"{self.min_entry_bid_depth_usd:.2f}U",
+                )
+                return None
         return await self._clob.place_fak_buy(
             token_id, usd_amount, limit_price, tick_size
+        )
+
+    def _log_no_fill(self, token_id: str, reason: str) -> None:
+        now = time.time()
+        if now - self._last_no_fill_log.get(token_id, 0.0) < 5.0:
+            return
+        self._last_no_fill_log[token_id] = now
+        log.info(
+            "live.buy_no_fill token={} reason={}", token_id[:12], reason
         )
 
     async def sell(

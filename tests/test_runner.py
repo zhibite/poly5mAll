@@ -8,6 +8,7 @@ from src.config import AssetConfig, load_settings
 from src.market.market_ws import PriceCache
 from src.models import Fill, MarketWindow, Position, Side
 from src.runner import AssetRunner, MultiAssetRunner
+from src.runtime_config import RuntimeConfig
 from src.store import StateStore
 
 T0 = 1_800_000_000
@@ -96,7 +97,7 @@ async def test_entry_then_take_profit(tmp_path):
         cache,
         FakeMarketService(_window()),
         StateStore(tmp_path),
-        can_enter=lambda: (True, "ok"),
+        can_enter=lambda side: (True, "ok"),
         on_trade=trades.append,
         on_state_change=lambda: None,
     )
@@ -131,7 +132,7 @@ async def test_broker_exception_resets_entry_state(tmp_path):
         cache,
         FakeMarketService(_window()),
         StateStore(tmp_path),
-        can_enter=lambda: (True, "ok"),
+        can_enter=lambda side: (True, "ok"),
         on_trade=lambda r: None,
         on_state_change=lambda: None,
     )
@@ -165,7 +166,7 @@ async def test_take_profit_fills_at_observed_gap(tmp_path):
         cache,
         FakeMarketService(_window()),
         StateStore(tmp_path),
-        can_enter=lambda: (True, "ok"),
+        can_enter=lambda side: (True, "ok"),
         on_trade=trades.append,
         on_state_change=lambda: None,
     )
@@ -184,46 +185,27 @@ async def test_take_profit_fills_at_observed_gap(tmp_path):
     assert trades[0].pnl_gross > 1.0
 
 
-class StopBroker(FakeBroker):
-    async def sell(self, token_id, shares, limit_price, tick_size):
-        self.sells.append((token_id, shares, limit_price))
-        price = 0.18
-        return Fill(
-            token_id, "SELL", shares, shares * price, price, 0.03, T0 + 70
-        )
-
-
 @pytest.mark.asyncio
-async def test_price_stop_loss_after_60s(tmp_path):
+async def test_same_side_limit(tmp_path):
     settings = _settings()
-    cache = PriceCache()
-    cache.set_best_bid_ask("down-token", 0.23, 0.24, ts=T0 + 10)
-    broker = StopBroker()
-    trades = []
-    runner = AssetRunner(
-        settings.assets[0],
+    runtime = RuntimeConfig(tmp_path / "runtime_config.json", settings.assets)
+    runner = MultiAssetRunner(
         settings,
-        broker,
-        cache,
+        None,
+        PriceCache(),
         FakeMarketService(_window()),
+        FakeBroker(),
         StateStore(tmp_path),
-        can_enter=lambda: (True, "ok"),
-        on_trade=trades.append,
-        on_state_change=lambda: None,
+        runtime=runtime,
     )
-    await runner.tick(T0 + 10)  # entry 0.24 -> SL 0.192
-    # Before 60s: a dip below the stop must NOT exit.
-    cache.set_best_bid_ask("down-token", 0.18, 0.19, ts=T0 + 50)
-    await runner.tick(T0 + 50)
-    assert broker.sells == []
-    # At/after 60s: observed mid 0.185 <= 0.192 -> stop at the bid.
-    cache.set_best_bid_ask("down-token", 0.18, 0.19, ts=T0 + 70)
-    await runner.tick(T0 + 70)
-    assert len(broker.sells) == 1
-    assert trades and trades[0].reason == "stop_loss"
-    assert trades[0].exit_price == pytest.approx(0.18)
-    assert trades[0].sl_price == pytest.approx(0.192)
-    assert trades[0].pnl_net < 0
+
+    class _P:
+        side = Side.UP
+
+    runner.all_positions = lambda: [_P(), _P(), _P()]  # type: ignore[method-assign]
+    assert runner.same_side_open(Side.UP) == 3
+    assert await runner.reserve_entry(Side.UP) is False
+    assert await runner.reserve_entry(Side.DOWN) is True
 
 
 @pytest.mark.asyncio
@@ -239,7 +221,7 @@ async def test_no_entry_after_60s(tmp_path):
         cache,
         FakeMarketService(_window()),
         StateStore(tmp_path),
-        can_enter=lambda: (True, "ok"),
+        can_enter=lambda side: (True, "ok"),
         on_trade=lambda r: None,
         on_state_change=lambda: None,
     )
@@ -261,7 +243,7 @@ async def test_forced_exit_at_240s(tmp_path):
         cache,
         FakeMarketService(_window()),
         StateStore(tmp_path),
-        can_enter=lambda: (True, "ok"),
+        can_enter=lambda side: (True, "ok"),
         on_trade=trades.append,
         on_state_change=lambda: None,
     )

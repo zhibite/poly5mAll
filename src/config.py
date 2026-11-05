@@ -42,10 +42,10 @@ ASSET_DEFAULTS: dict[str, tuple[str, float, float]] = {
 # The doc's asset order, used when TRADE_ASSETS is not set.
 DEFAULT_ASSET_ORDER = ("BTC", "ETH", "BNB", "SOL", "DOGE", "XRP", "HYPE")
 
-# Backtests: BTC 0.25/10% benefits from a 20% price stop, while the low-entry
-# coins are hurt by it.  The global fallback is 0 (off); BTC enables 20%.
+# Price stop-loss retired: all assets default to 0 (off).  The 240s
+# time-based forced exit is the only stop-like exit.
 ASSET_DEFAULT_STOP_LOSS: dict[str, float] = {
-    "BTC": 0.20,
+    "BTC": 0.0,
     "ETH": 0.0,
     "BNB": 0.0,
     "SOL": 0.0,
@@ -169,9 +169,16 @@ class ExecutionConfig:
     # "market":   trigger on observed mid >= target; marketable FAK below
     #             the bid (doc's option B).  Can fill below target.
     tp_execution_mode: str = "observed"
-    # Price stop-loss after t=60s: exit when observed mid <= entry * (1-SL).
-    # 0 disables it.  Global fallback is OFF; BTC enables 20% per asset.
+    # Price stop-loss is retired.  Kept at 0 for config/state compatibility;
+    # the 240s time-based forced exit remains.
     stop_loss_pct: float = 0.0
+    # Liquidity gate before a BUY: require both sides of the book and at
+    # least this much bid notional (USDC) so the position can be exited.
+    require_two_sided_book: bool = True
+    min_entry_bid_depth_usd: float = 5.0
+    # Max concurrent open positions with the same side (UP or DOWN) across
+    # all assets.  0 disables the cap.
+    max_same_side_positions: int = 3
     entry_retry_s: float = 1.0
     exit_retry_s: float = 1.0
     slippage_pct: float = 2.0
@@ -421,6 +428,24 @@ def load_settings(config_path: str | Path | None = None) -> Settings:
         stop_loss_pct=_env_float(
             "STOP_LOSS_PCT",
             _as_float(_get(exec_raw, "STOP_LOSS_PCT", 0.0), 0.0),
+        ),
+        require_two_sided_book=_env_bool(
+            "REQUIRE_TWO_SIDED_BOOK",
+            _as_bool(_get(exec_raw, "REQUIRE_TWO_SIDED_BOOK", True), True),
+        ),
+        min_entry_bid_depth_usd=_env_float(
+            "MIN_ENTRY_BID_DEPTH_USD",
+            _as_float(
+                _get(exec_raw, "MIN_ENTRY_BID_DEPTH_USD", 5.0), 5.0
+            ),
+        ),
+        max_same_side_positions=_env_int(
+            "MAX_SAME_SIDE_POSITIONS",
+            int(
+                _as_float(
+                    _get(exec_raw, "MAX_SAME_SIDE_POSITIONS", 3), 3
+                )
+            ),
         ),
         entry_retry_s=_as_float(_get(exec_raw, "ENTRY_RETRY_S", 1.0), 1.0),
         exit_retry_s=_as_float(_get(exec_raw, "EXIT_RETRY_S", 1.0), 1.0),
@@ -672,6 +697,10 @@ def validate_settings(settings: Settings) -> None:
         )
     if not (0.0 <= e.stop_loss_pct < 1.0):
         raise ConfigError("STOP_LOSS_PCT must be in [0, 1)")
+    if e.min_entry_bid_depth_usd < 0:
+        raise ConfigError("MIN_ENTRY_BID_DEPTH_USD must be >= 0")
+    if e.max_same_side_positions < 0:
+        raise ConfigError("MAX_SAME_SIDE_POSITIONS must be >= 0")
     if e.max_spread_abs < 0:
         raise ConfigError("MAX_SPREAD_ABS must be >= 0")
 
@@ -749,7 +778,6 @@ def describe(settings: Settings) -> str:
         flag = "" if asset.enabled else "  [off]"
         lines.append(
             f"  {asset.asset:5} {sides:9} entry<={asset.entry_thresh:.2f}  "
-            f"tp={asset.tp_pct*100:.0f}%  sl={asset.stop_loss_pct*100:.0f}%  "
-            f"stake={stake:g}U{flag}"
+            f"tp={asset.tp_pct*100:.0f}%  stake={stake:g}U{flag}"
         )
     return "\n".join(lines)

@@ -11,7 +11,9 @@ _BODY = r"""
   </div>
   <div class="head-meta">
     配置版本 <b id="version">--</b><br>
-    <span class="mono" id="runtime-path">--</span>
+    <span class="mono" id="runtime-path">--</span><br>
+    同向上限 <b id="same-limit">--</b> · 买盘深度 ≥
+    <b id="min-depth">--</b> U
   </div>
 </div>
 
@@ -46,10 +48,10 @@ _BODY = r"""
 <div id="auth-alert"></div>
 
 <div class="alert info">
-  <b>生效时机：</b>启用/关闭 <b>立即</b> 阻止/允许新开仓；方向、entry、TP、止损、每笔仓位在
-  <b>下一个 5m 窗口</b> 生效。已有仓位始终按原参数止盈/止损/240s 强平。
-  密钥、端口、费率、`TP_EXECUTION_MODE` 不在本页，需改
-  <span class="mono">.env</span> / <span class="mono">config.toml</span>。
+  <b>生效时机：</b>启用/关闭 <b>立即</b> 阻止/允许新开仓；方向、entry、TP、每笔仓位在
+  <b>下一个 5m 窗口</b> 生效。已有仓位始终按原参数止盈/240s 强平。
+  密钥、端口、费率、`TP_EXECUTION_MODE`、流动性过滤和同向上限不在本页，
+  需改 <span class="mono">.env</span> / <span class="mono">config.toml</span>。
 </div>
 
 <div class="section">
@@ -59,10 +61,9 @@ _BODY = r"""
     <div class="no-data">加载中...</div>
   </div>
   <div class="alert info" style="margin:14px 0 0">
-    止盈公式：<span class="mono">target = 实际成交价 × (1 + TP%)</span>；
-    价格止损：<span class="mono">sl = 实际成交价 × (1 − 止损%)</span>。
+    止盈公式：<span class="mono">target = 实际成交价 × (1 + TP%)</span>。
     默认 <span class="mono">observed</span>：触发后 FAK 卖出，成交价取当时最优
-    bid；价格止损 BTC 默认 20%、其他币默认 0（关闭），只从 t=60s 开始检查。
+    bid。价格止损已移除，只保留 240s 时间强平。
   </div>
 </div>
 
@@ -73,9 +74,9 @@ _BODY = r"""
       <thead><tr>
         <th>启用</th><th>币种</th><th>方向</th>
         <th class="num">entry ≤</th><th class="num">TP %</th>
-        <th class="num">止损 %</th><th class="num">每笔 U</th>
+        <th class="num">每笔 U</th>
       </tr></thead>
-      <tbody id="rows"><tr><td colspan="7" class="no-data">加载中...</td></tr></tbody>
+      <tbody id="rows"><tr><td colspan="6" class="no-data">加载中...</td></tr></tbody>
     </table>
   </div>
 </div>
@@ -112,7 +113,7 @@ function renderTiming(cfg) {
     {label: '止盈', dur: Math.max(1, force - tpStart), cls: 'seg-tp',
      title: `${tpStart}–${force}s：价格 ≥ 成交价×(1+TP%) 卖出`},
     {label: '强平', dur: Math.max(1, deadline - force), cls: 'seg-sl',
-     title: `${force}–${deadline}s：未止盈/未止损则 FAK 市价卖出，每秒重试`},
+     title: `${force}–${deadline}s：未止盈则 FAK 市价卖出，每秒重试`},
     {label: '结算', dur: Math.max(1, total - deadline), cls: 'seg-settle',
      title: `${deadline}–${total}s：未卖出则按 Gamma 0/1 结算`},
   ];
@@ -134,17 +135,11 @@ function renderTiming(cfg) {
       <div class="t-desc">价格 ≥ 实际成交价 × (1 + TP%) 时卖出；
         默认 observed，按当时最优 bid 成交。</div>
     </div>
-    <div class="timing-card sl-price">
-      <div class="t-label">价格止损（BTC 20%，其他 0）</div>
-      <div class="t-time">${tpStart}–${force}s</div>
-      <div class="t-desc">观察价 ≤ 实际成交价 × (1 − 止损%) 时，
-        按观察价市价卖出；0–60s 不设止损。</div>
-    </div>
     <div class="timing-card sl">
       <div class="t-label">时间止损 / 强平</div>
       <div class="t-time">${force}–${deadline}s</div>
-      <div class="t-desc">到 ${force}s 仍未止盈/止损，FAK 市价卖出并每秒重试；
-        这是时间止损，不是价格止损。</div>
+      <div class="t-desc">到 ${force}s 仍未止盈，FAK 市价卖出并每秒重试；
+        这是时间强平。</div>
     </div>
     <div class="timing-card settle">
       <div class="t-label">结算</div>
@@ -162,6 +157,8 @@ function render() {
   $('mode').className = 'stat-value ' + (cfg.mode === 'live' ? 'red' : 'green');
   $('fee-rate').textContent = fmt(cfg.taker_fee_rate, 4);
   $('global-stake').textContent = fmt(cfg.stake_usd, 0) + ' U';
+  $('same-limit').textContent = String(cfg.max_same_side_positions ?? '--');
+  $('min-depth').textContent = fmt(cfg.min_entry_bid_depth_usd, 0);
   const enabled = (cfg.assets || []).filter((a) => a.enabled).length;
   $('enabled-count').textContent = enabled + ' / ' + (cfg.assets || []).length;
   $('entries').textContent = cfg.paused ? '已暂停' : '允许';
@@ -180,7 +177,6 @@ function render() {
   $('rows').innerHTML = (cfg.assets || []).map((a) => {
     const stake = a.stake_usd === null || a.stake_usd === undefined
       ? '' : a.stake_usd;
-    const sl = (Number(a.stop_loss_pct ?? 0.20) * 100).toFixed(1);
     const on = !!a.enabled;
     return `<tr data-asset="${escapeHtml(a.asset)}">
       <td><input type="checkbox" data-k="enabled" ${on ? 'checked' : ''}></td>
@@ -199,14 +195,11 @@ function render() {
       <td class="num"><input type="number" data-k="tp_pct" step="0.5"
           min="0.1" max="1000" style="width:90px"
           value="${(Number(a.tp_pct) * 100).toFixed(1)}"></td>
-      <td class="num"><input type="number" data-k="stop_loss_pct" step="1"
-          min="0" max="99" style="width:90px" title="0 表示关闭价格止损"
-          value="${sl}"></td>
       <td class="num"><input type="number" data-k="stake_usd" step="1"
           min="1" style="width:90px" value="${stake}"
           placeholder="${cfg.stake_usd}"></td>
     </tr>`;
-  }).join('') || '<tr><td colspan="9" class="no-data">没有资产</td></tr>';
+  }).join('') || '<tr><td colspan="6" class="no-data">没有资产</td></tr>';
 
   for (const cb of document.querySelectorAll('#rows input[data-k="enabled"]')) {
     cb.addEventListener('change', () => {
@@ -227,7 +220,6 @@ function collect() {
     const sides = get('sides').value;
     const entry = Number(get('entry_thresh').value);
     const tpPct = Number(get('tp_pct').value);
-    const slPct = Number(get('stop_loss_pct').value);
     const stakeRaw = get('stake_usd').value;
     const stake = stakeRaw === '' ? null : Number(stakeRaw);
 
@@ -238,9 +230,6 @@ function collect() {
     if (entry * (1 + tpPct / 100) >= 1) {
       throw new Error(`${asset}: entry × (1 + TP%) 必须 < 1`);
     }
-    if (!(slPct >= 0 && slPct < 100)) {
-      throw new Error(`${asset}: 止损% 必须在 [0, 100) 之间，0 表示关闭`);
-    }
     if (stake !== null && !(stake > 0)) {
       throw new Error(`${asset}: 每笔 U 必须 > 0 或留空`);
     }
@@ -249,7 +238,7 @@ function collect() {
       sides,
       entry_thresh: entry,
       tp_pct: tpPct / 100,
-      stop_loss_pct: slPct / 100,
+      stop_loss_pct: 0.0,
       stake_usd: stake,
     };
   }

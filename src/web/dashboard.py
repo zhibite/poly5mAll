@@ -64,10 +64,10 @@ _BODY = r"""
       <thead><tr>
         <th>资产</th><th>启用</th><th>窗口</th><th>阶段</th><th>方向</th><th>状态</th>
         <th class="num">mid</th><th class="num">bid/ask</th>
-        <th class="num">entry≤</th><th class="num">TP</th><th class="num">SL</th>
+        <th class="num">entry≤</th><th class="num">TP</th>
         <th class="num">持仓</th><th class="num">浮盈 U</th>
       </tr></thead>
-      <tbody id="assets"><tr><td colspan="13" class="no-data">加载中...</td></tr></tbody>
+      <tbody id="assets"><tr><td colspan="12" class="no-data">加载中...</td></tr></tbody>
     </table>
   </div>
 </div>
@@ -104,7 +104,7 @@ function renderAssets(s) {
       rows.push(`<tr>
         <td><b>${escapeHtml(asset)}</b></td>
         <td>${enabledPill}</td>
-        <td colspan="11" class="muted">${reason}</td>
+        <td colspan="10" class="muted">${reason}</td>
       </tr>`);
       continue;
     }
@@ -124,13 +124,12 @@ function renderAssets(s) {
         <td class="num">${fmt(side.bid, 3)} / ${fmt(side.ask, 3)}</td>
         <td class="num">${fmt(side.entry_thresh, 2)}</td>
         <td class="num">${fmt(side.tp_pct * 100, 0)}%</td>
-        <td class="num">${side.sl_price ? fmt(side.sl_price, 3) : '--'}</td>
         <td class="num">${pos}</td>
         <td class="num ${cls(side.unrealized_usd)}">${money(side.unrealized_usd, 3)}</td>
       </tr>`);
     }
   }
-  $('assets').innerHTML = rows.join('') || '<tr><td colspan="13" class="no-data">暂无资产</td></tr>';
+  $('assets').innerHTML = rows.join('') || '<tr><td colspan="12" class="no-data">暂无资产</td></tr>';
 }
 
 function renderTrades(trades) {
@@ -176,9 +175,12 @@ async function refresh() {
     $('entries-sub').textContent = s.entries_allowed
       ? '可开新仓' : (s.entries_block_reason || '');
     $('pause').textContent = s.paused ? '恢复新开仓' : '暂停新开仓';
-    $('mode-note').textContent = s.mode === 'live'
+    const ss = s.same_side_open || {};
+    const sideLimit = s.max_same_side_positions ?? '--';
+    $('mode-note').textContent = (s.mode === 'live'
       ? '实盘模式：真实 CLOB FAK 订单'
-      : '纸面模式：实时订单簿模拟成交，已扣 0.07 taker 费';
+      : '纸面模式：实时订单簿模拟成交，已扣 0.07 taker 费')
+      + ` · 同向 UP ${ss.UP ?? 0}/${sideLimit} · DOWN ${ss.DOWN ?? 0}/${sideLimit}`;
     $('mode-note').className = 'control-meta ' + (s.mode === 'live' ? 'red' : 'muted');
     renderAssets(s);
 

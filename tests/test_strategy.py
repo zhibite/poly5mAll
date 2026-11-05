@@ -90,36 +90,6 @@ def test_tp_waits_until_60s_and_uses_bid():
     assert not side.tp_due(T0 + 70, wide, g, e, f)
 
 
-def test_stop_loss_starts_after_60s_and_uses_mid():
-    side = SideRuntime(_plan(), _window())
-    g, e, f = GeneralConfig(), ExecutionConfig(), FeedConfig()
-    fill = Fill("down-token", "BUY", 40.0, 10.0, 0.25, 0.0, T0 + 10)
-    pos = side.on_entry_fill(fill, T0 + 10, e)
-    assert pos.sl_price == pytest.approx(0.20)  # 0.25 * (1 - 0.20)
-
-    # 0–60s is the observation window: no price stop.
-    low_before = _quote(T0 + 50, 0.19, bid=0.18, ask=0.20)
-    assert not side.sl_due(T0 + 50, low_before, g, e, f)
-    # From 60s, an observed mid at/below the stop triggers even if bid > sl.
-    wide = _quote(T0 + 61, 0.19, bid=0.25, ask=0.30)
-    assert side.sl_due(T0 + 61, wide, g, e, f)
-
-
-def test_stop_loss_disabled_with_zero_pct():
-    plan = SidePlan(
-        asset="BTC", side=Side.DOWN, entry_thresh=0.25, tp_pct=0.10,
-        stake_usd=10.0, stop_loss_pct=0.0,
-    )
-    side = SideRuntime(plan, _window())
-    g, e, f = GeneralConfig(), ExecutionConfig(), FeedConfig()
-    fill = Fill("down-token", "BUY", 40.0, 10.0, 0.25, 0.0, T0 + 10)
-    pos = side.on_entry_fill(fill, T0 + 10, e)
-    assert pos.sl_price == 0.0
-    assert not side.sl_due(
-        T0 + 61, _quote(T0 + 61, 0.10, bid=0.09, ask=0.11), g, e, f
-    )
-
-
 def test_tp_trigger_modes():
     side = SideRuntime(_plan(), _window())
     g, e, f = GeneralConfig(), ExecutionConfig(), FeedConfig()

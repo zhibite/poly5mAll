@@ -67,11 +67,38 @@ async def test_paper_buy_rejects_ask_above_limit():
 
 
 @pytest.mark.asyncio
-async def test_paper_falls_back_to_ws_top_of_book():
+async def test_paper_falls_back_to_ws_top_of_book_when_filter_off():
     pm = FakePM(None)
     cache = PriceCache()
     cache.set_best_bid_ask("tok", 0.13, 0.14)
-    broker = PaperBroker(pm, cache)
+    broker = PaperBroker(
+        pm, cache, require_two_sided_book=False, min_entry_bid_depth_usd=0
+    )
     buy = await broker.buy("tok", 10.0, 0.15, 0.01)
     assert buy is not None
     assert buy.price == pytest.approx(0.14)
+
+
+@pytest.mark.asyncio
+async def test_paper_rejects_no_bids():
+    pm = FakePM({"asks": [{"price": "0.14", "size": "100"}], "bids": []})
+    broker = PaperBroker(pm, PriceCache())
+    assert await broker.buy("tok", 10.0, 0.15, 0.01) is None
+
+
+@pytest.mark.asyncio
+async def test_paper_rejects_thin_bids():
+    pm = FakePM(
+        {
+            "asks": [{"price": "0.14", "size": "100"}],
+            "bids": [{"price": "0.13", "size": "1"}],
+        }
+    )
+    broker = PaperBroker(pm, PriceCache(), min_entry_bid_depth_usd=5.0)
+    assert await broker.buy("tok", 10.0, 0.15, 0.01) is None
+
+
+@pytest.mark.asyncio
+async def test_paper_rejects_missing_book_when_filter_on():
+    broker = PaperBroker(FakePM(None), PriceCache())
+    assert await broker.buy("tok", 10.0, 0.15, 0.01) is None

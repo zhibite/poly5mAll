@@ -119,7 +119,7 @@ def test_config_defaults_and_update(client):
     by_name = {a["asset"]: a for a in data["assets"]}
     assert by_name["BTC"]["enabled"] is True
     assert by_name["ETH"]["enabled"] is False
-    assert by_name["BTC"]["stop_loss_pct"] == pytest.approx(0.20)
+    assert by_name["BTC"]["stop_loss_pct"] == pytest.approx(0.0)
     assert data["web"]["port"] == 8033
     assert any(f["asset"] == "BTC" and f["side"] == "DOWN" for f in data["fee_lines"])
 

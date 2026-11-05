@@ -197,12 +197,19 @@ async def _build_broker(settings: Settings, pm, cache: PriceCache):
             fee_rate=e.taker_fee_rate,
             include_fees=e.include_fees,
         )
-        return LiveBroker(clob)
+        return LiveBroker(
+            clob,
+            pm,
+            require_two_sided_book=e.require_two_sided_book,
+            min_entry_bid_depth_usd=e.min_entry_bid_depth_usd,
+        )
     return PaperBroker(
         pm,
         cache,
         fee_rate=e.taker_fee_rate,
         include_fees=e.include_fees,
+        require_two_sided_book=e.require_two_sided_book,
+        min_entry_bid_depth_usd=e.min_entry_bid_depth_usd,
     )
 
 

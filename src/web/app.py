@@ -288,6 +288,9 @@ def create_app(
             "include_fees": e.include_fees,
             "tp_execution_mode": e.tp_execution_mode,
             "stop_loss_pct": e.stop_loss_pct,
+            "require_two_sided_book": e.require_two_sided_book,
+            "min_entry_bid_depth_usd": e.min_entry_bid_depth_usd,
+            "max_same_side_positions": e.max_same_side_positions,
             "skip_fee_negative": e.skip_fee_negative,
             "max_daily_loss_usd": e.max_daily_loss_usd,
             "timing": {

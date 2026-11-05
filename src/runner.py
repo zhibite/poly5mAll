@@ -42,6 +42,14 @@ from src.strategy.rebound import SideRuntime
 log = get_logger("runner")
 
 
+async def _always_reserve_entry(side: Side) -> bool:
+    return True
+
+
+async def _release_entry_noop(side: Side) -> None:
+    return None
+
+
 class AssetRunner:
     """The strategy loop for one asset."""
 
@@ -58,6 +66,8 @@ class AssetRunner:
         on_trade,
         on_state_change,
         runtime: RuntimeConfig | None = None,
+        reserve_entry=None,
+        release_entry=None,
     ) -> None:
         self.asset = asset_cfg.asset
         self.cfg = asset_cfg
@@ -70,6 +80,8 @@ class AssetRunner:
         self._can_enter = can_enter
         self._on_trade = on_trade
         self._on_state_change = on_state_change
+        self._reserve_entry_cb = reserve_entry or _always_reserve_entry
+        self._release_entry_cb = release_entry or _release_entry_noop
 
         self.window: MarketWindow | None = None
         self.sides: list[SideRuntime] = []
@@ -185,10 +197,6 @@ class AssetRunner:
             side_rt.position = pos
             side_rt.status = SideStatus.HOLDING
             side_rt.last_exit_attempt = 0.0
-            if pos.sl_price <= 0 and side_rt.plan.stop_loss_pct > 0:
-                pos.sl_price = pos.entry_price * (
-                    1.0 - float(side_rt.plan.stop_loss_pct)
-                )
             adopted.append(pos)
             log.info(
                 "[{}] adopted {} {} shares={:.4f} entry={:.4f} tp={:.4f}",
@@ -270,16 +278,6 @@ class AssetRunner:
         if side.status is SideStatus.SETTLE_PENDING:
             return
 
-        if side.sl_due(
-            now,
-            quote,
-            self.settings.general,
-            self.settings.execution,
-            self.settings.feed,
-        ):
-            await self._exit(side, now, quote, reason="stop_loss")
-            return
-
         if side.tp_due(
             now,
             quote,
@@ -328,53 +326,69 @@ class AssetRunner:
                 self._log_skip(reason, side, now)
             return
 
-        allowed, block = self._can_enter()
+        allowed, block = self._can_enter(side.plan.side)
         if not allowed:
             side.last_reason = block
             self._log_skip(block, side, now)
             return
 
-        side.status = SideStatus.ENTERING
-        side.last_entry_attempt = now
-        limit = floor_tick(side.plan.entry_thresh, self.window.tick_size)
-        if limit <= 0:
-            side.on_entry_missed(now)
+        reserved = await self._reserve_entry_cb(side.plan.side)
+        if not reserved:
+            side.last_reason = "same-side-limit"
+            self._log_skip("same-side-limit", side, now)
             return
         try:
-            fill = await self.broker.buy(
-                self.window.token(side.plan.side),
-                side.plan.stake_usd,
-                limit,
-                self.window.tick_size,
-            )
-        except Exception as exc:  # noqa: BLE001
-            side.on_entry_missed(now)
-            log.exception("[{}] buy failed: {}", self.asset, exc)
-            return
-        if fill is None or fill.shares <= 0:
-            side.last_reason = "no-fill"
-            self._log_skip("no-fill", side, now)
-            side.on_entry_missed(now)
-            return
+            side.status = SideStatus.ENTERING
+            side.last_entry_attempt = now
+            limit = floor_tick(side.plan.entry_thresh, self.window.tick_size)
+            if limit <= 0:
+                side.on_entry_missed(now)
+                return
+            try:
+                fill = await self.broker.buy(
+                    self.window.token(side.plan.side),
+                    side.plan.stake_usd,
+                    limit,
+                    self.window.tick_size,
+                )
+            except Exception as exc:  # noqa: BLE001
+                side.on_entry_missed(now)
+                log.exception("[{}] buy failed: {}", self.asset, exc)
+                return
+            if fill is None or fill.shares <= 0:
+                side.last_reason = "no-fill"
+                self._log_skip("no-fill", side, now)
+                side.on_entry_missed(now)
+                return
 
-        try:
-            position = side.on_entry_fill(fill, now, self.settings.execution)
-        except Exception as exc:  # noqa: BLE001
-            side.on_entry_missed(now)
-            log.error("[{}] invalid entry fill {}: {}", self.asset, fill, exc)
-            return
-        log.info(
-            "[{}] ENTRY {} {} shares={:.4f} px={:.4f} cost={:.4f} fee={:.4f} tp={:.4f}",
-            self.asset,
-            side.plan.side.value,
-            position.position_id,
-            position.shares,
-            position.entry_price,
-            position.cost_usd,
-            position.entry_fee,
-            position.tp_price,
-        )
-        self._on_state_change()
+            try:
+                position = side.on_entry_fill(
+                    fill, now, self.settings.execution
+                )
+            except Exception as exc:  # noqa: BLE001
+                side.on_entry_missed(now)
+                log.error(
+                    "[{}] invalid entry fill {}: {}",
+                    self.asset,
+                    fill,
+                    exc,
+                )
+                return
+            log.info(
+                "[{}] ENTRY {} {} shares={:.4f} px={:.4f} cost={:.4f} "
+                "fee={:.4f} tp={:.4f}",
+                self.asset,
+                side.plan.side.value,
+                position.position_id,
+                position.shares,
+                position.entry_price,
+                position.cost_usd,
+                position.entry_fee,
+                position.tp_price,
+            )
+            self._on_state_change()
+        finally:
+            await self._release_entry_cb(side.plan.side)
 
     async def _exit(
         self,
@@ -662,6 +676,11 @@ class MultiAssetRunner:
         self._last_kill_state: bool | None = None
         self._last_daily_warn = 0.0
         self._started_at = time.time()
+        self._entry_lock = asyncio.Lock()
+        self._entry_reservations: dict[Side, int] = {
+            Side.UP: 0,
+            Side.DOWN: 0,
+        }
 
         # Build every configured asset, including disabled ones: the Web
         # config page can turn a coin on without restarting the process.
@@ -678,6 +697,31 @@ class MultiAssetRunner:
                 on_trade=self._on_trade,
                 on_state_change=self._save_state,
                 runtime=self.runtime,
+                reserve_entry=self.reserve_entry,
+                release_entry=self.release_entry,
+            )
+
+    def same_side_open(self, side: Side) -> int:
+        return sum(
+            1 for pos in self.all_positions() if pos.side is side
+        )
+
+    async def reserve_entry(self, side: Side) -> bool:
+        """Reserve one same-side slot, including in-flight entry attempts."""
+        limit = int(self.settings.execution.max_same_side_positions)
+        if limit <= 0:
+            return True
+        async with self._entry_lock:
+            used = self.same_side_open(side) + self._entry_reservations[side]
+            if used >= limit:
+                return False
+            self._entry_reservations[side] += 1
+            return True
+
+    async def release_entry(self, side: Side) -> None:
+        async with self._entry_lock:
+            self._entry_reservations[side] = max(
+                0, self._entry_reservations[side] - 1
             )
 
     def enabled_assets(self) -> set[str]:
@@ -723,7 +767,7 @@ class MultiAssetRunner:
         log.warning("runtime flatten_open_positions sold={}", sold)
         return sold
 
-    def entries_allowed(self) -> tuple[bool, str]:
+    def entries_allowed(self, side: Side | None = None) -> tuple[bool, str]:
         e = self.settings.execution
         if self.pause_new_entries:
             return False, self.pause_reason or "paused"
@@ -1107,6 +1151,11 @@ class MultiAssetRunner:
             "mode": self.settings.mode,
             "uptime_s": round(now_f - self._started_at, 1),
             "config_version": self.runtime.version,
+            "max_same_side_positions": self.settings.execution.max_same_side_positions,
+            "same_side_open": {
+                "UP": self.same_side_open(Side.UP),
+                "DOWN": self.same_side_open(Side.DOWN),
+            },
             "paused": self.paused,
             "pause_reason": self.pause_reason,
             "entries_allowed": allowed,
