@@ -2,6 +2,8 @@ from __future__ import annotations
 
 import time
 
+import pytest
+
 from src.market.market_ws import PriceCache, MarketWSManager
 
 
@@ -40,14 +42,39 @@ def test_rest_book_source_is_visible():
     cache = PriceCache()
     cache.set_book(
         "tok",
-        [{"price": "0.20", "size": "100"}],
-        [{"price": "0.30", "size": "100"}],
+        [{"price": "0.24", "size": "100"}],
+        [{"price": "0.26", "size": "100"}],
         source="rest_book",
     )
     quote = cache.quote("tok", now=time.time())
     assert quote is not None
     assert quote.source == "rest_book"
-    assert quote.bid == 0.20 and quote.ask == 0.30
+    assert quote.bid == 0.24 and quote.ask == 0.26
+
+
+def test_wide_bba_uses_rest_midpoint():
+    # 0.05/0.95 has a meaningless BBO midpoint of 0.5; the official
+    # midpoint (0.23) must drive the strategy reference while the wide
+    # bid/ask remain visible to the entry spread filter.
+    cache = PriceCache()
+    now = 1_000_000.0
+    cache.set_midpoint("tok", 0.23, ts=now - 1)
+    cache.set_best_bid_ask("tok", 0.05, 0.95, ts=now - 0.5)
+    quote = cache.quote("tok", now=now)
+    assert quote is not None
+    assert quote.source == "rest_mid"
+    assert quote.mid == 0.23
+    assert quote.bid == 0.05 and quote.ask == 0.95
+    assert quote.spread == pytest.approx(0.90)
+
+
+def test_wide_bba_without_midpoint_returns_none():
+    # Do not fall back to a meaningless 0.5 reference when no official
+    # midpoint/last trade exists.
+    cache = PriceCache()
+    now = 1_000_000.0
+    cache.set_best_bid_ask("tok", 0.05, 0.95, ts=now - 0.5)
+    assert cache.quote("tok", now=now) is None
 
 
 def test_ws_manager_shards_tokens():

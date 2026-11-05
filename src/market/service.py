@@ -82,21 +82,30 @@ class MarketService:
         extra: Iterable[str] = (),
         *,
         assets: set[str] | None = None,
+        now: float | None = None,
     ) -> set[str]:
-        """Tokens that need a REST midpoint poll right now.
+        """Tokens that need a REST midpoint/book poll right now.
 
         Only the current window (plus open positions) is polled.  The next
         window is subscribed on the WebSocket for a fast t=0 BBO, but its
-        REST midpoint is not needed until it becomes current; this keeps the
+        REST price is not needed until it becomes current; this keeps the
         CLOB request rate at ~14/2 s instead of ~28/2 s.
+
+        ``current()`` is called here so a boundary is promoted even if the
+        discovery loop has not run since the clock crossed it.  Without
+        this, the new window's tokens are not REST-polled until the next
+        discovery tick, leaving the cache on its pre-open/initial book
+        while the real book has already moved.
         """
+        now_f = time.time() if now is None else float(now)
         tokens: set[str] = {t for t in extra if t}
-        for asset, state in self._by_asset.items():
+        for asset in self._by_asset:
             if assets is not None and asset not in assets:
                 continue
-            if state.current is not None:
-                tokens.add(state.current.up_token)
-                tokens.add(state.current.down_token)
+            window = self.current(asset, now_f)
+            if window is not None:
+                tokens.add(window.up_token)
+                tokens.add(window.down_token)
         return {t for t in tokens if t}
 
     def active_tokens(

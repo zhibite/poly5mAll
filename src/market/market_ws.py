@@ -11,9 +11,10 @@ The strategy reads a single ``Quote`` per token:
     bid   executable price for SELLs (when fresh)
     ask   executable price for BUYs  (when fresh)
 
-Priority for ``mid``: fresh WS BBO midpoint, then fresh REST midpoint, then
-fresh last trade.  The REST midpoint poller in ``runner.py`` keeps the
-fallback alive when the WS has no book updates.
+Priority for ``mid``: fresh WS BBO midpoint (only when the BBO spread is
+tight), then fresh REST midpoint, then fresh last trade.  A 0.05/0.95 book
+has a meaningless midpoint of 0.5, so a wide BBO falls back to the official
+REST midpoint; bid/ask remain available for the spread filter and fills.
 """
 from __future__ import annotations
 
@@ -34,6 +35,9 @@ log = get_logger("market_ws")
 
 MARKET_WS_URL = "wss://ws-subscriptions-clob.polymarket.com/ws/market"
 _RECONNECT_AFTER_PRUNED = 128
+# A BBO wider than this is not usable as a strategy reference; fall back to
+# the REST midpoint.  The entry spread filter separately gates execution.
+MAX_BBA_SPREAD_FOR_MID = 0.05
 
 
 @dataclass
@@ -157,6 +161,12 @@ class PriceCache:
         bba_ok = (
             bid > 0 and ask > 0 and ask >= bid
             and bba_age <= min(max_age_f, bba_max_age)
+            # A wide book's midpoint is not a price: 0.05/0.95 gives 0.5
+            # even when the official midpoint is 0.23.  Use the REST
+            # midpoint for the strategy reference when the spread is
+            # wider than this; bid/ask stay available to the spread
+            # filter and to execution.
+            and (ask - bid) <= MAX_BBA_SPREAD_FOR_MID + 1e-9
         )
 
         if bba_ok:

@@ -81,6 +81,18 @@ async def test_current_promotes_at_boundary():
 
 
 @pytest.mark.asyncio
+async def test_poll_tokens_promotes_at_boundary():
+    pm = FakePM([_market(T0, "a"), _market(T0 + 300, "b")])
+    ms = MarketService(pm, window_sec=300, pre_discovery_lead_s=60,
+                       min_discovery_interval_s=0)
+    await ms.refresh("BTC", T0 + 10)
+    assert ms.poll_tokens(now=T0 + 10) == {"up-a", "down-a"}
+    # No refresh between the boundary and the poll: poll_tokens itself
+    # must promote the known next window and return its tokens.
+    assert ms.poll_tokens(now=T0 + 301) == {"up-b", "down-b"}
+
+
+@pytest.mark.asyncio
 async def test_pre_discovery_of_next_next_window():
     pm = FakePM(
         [
