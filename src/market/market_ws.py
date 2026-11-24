@@ -213,10 +213,18 @@ class PriceCache:
 def _book_side(
     rows: Any, levels: int, *, best_is_max: bool
 ) -> tuple[float, float]:
+    """Best price and top-``levels`` depth of one book side.
+
+    The CLOB returns bids **ascending** (0.01 first) and asks **descending**
+    (0.99 first), so the best level is at the *end* of the array.  Slicing
+    the first ``levels`` rows before picking the best yielded the worst
+    levels (0.05/0.95), which looked like a 0.90 spread and blocked every
+    entry.  Parse the whole side, sort, then keep the top levels.
+    """
     if not isinstance(rows, list):
         return 0.0, 0.0
     prices: list[tuple[float, float]] = []
-    for row in rows[:levels]:
+    for row in rows:
         if not isinstance(row, dict):
             continue
         try:
@@ -228,11 +236,9 @@ def _book_side(
             prices.append((price, size))
     if not prices:
         return 0.0, 0.0
-    best = max(prices, key=lambda x: x[0])[0] if best_is_max else min(
-        prices, key=lambda x: x[0]
-    )[0]
-    depth = sum(size for _, size in prices)
-    return best, depth
+    prices.sort(key=lambda x: x[0], reverse=best_is_max)
+    top = prices[: max(1, int(levels))]
+    return top[0][0], sum(size for _, size in top)
 
 
 # ---------------------------------------------------------------------------

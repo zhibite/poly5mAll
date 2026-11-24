@@ -52,6 +52,33 @@ def test_rest_book_source_is_visible():
     assert quote.bid == 0.24 and quote.ask == 0.26
 
 
+def test_set_book_handles_worst_first_clob_order():
+    """CLOB books list bids ascending and asks descending; the best level
+    is at the end, not the start."""
+    cache = PriceCache()
+    cache.set_book(
+        "tok",
+        [
+            {"price": "0.01", "size": "10"},
+            {"price": "0.40", "size": "5"},
+            {"price": "0.49", "size": "7"},
+        ],
+        [
+            {"price": "0.99", "size": "10"},
+            {"price": "0.60", "size": "5"},
+            {"price": "0.51", "size": "7"},
+        ],
+        levels=3,
+    )
+    quote = cache.quote("tok", now=time.time())
+    assert quote is not None
+    assert quote.bid == pytest.approx(0.49)
+    assert quote.ask == pytest.approx(0.51)
+    assert quote.spread == pytest.approx(0.02)
+    assert cache.bid_depth["tok"] == pytest.approx(22)
+    assert cache.ask_depth["tok"] == pytest.approx(22)
+
+
 def test_wide_bba_uses_rest_midpoint():
     # 0.05/0.95 has a meaningless BBO midpoint of 0.5; the official
     # midpoint (0.23) must drive the strategy reference while the wide
