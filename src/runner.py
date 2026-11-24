@@ -50,11 +50,11 @@ log = get_logger("runner")
 _TICK_REFRESH_S = 5.0
 
 
-async def _always_reserve_entry(side: Side) -> bool:
+async def _always_reserve_entry(side: Side, window_start: int) -> bool:
     return True
 
 
-async def _release_entry_noop(side: Side) -> None:
+async def _release_entry_noop(side: Side, window_start: int) -> None:
     return None
 
 
@@ -356,7 +356,10 @@ class AssetRunner:
             self._log_skip(block, side, now)
             return
 
-        reserved = await self._reserve_entry_cb(side.plan.side)
+        window_start = self.window.start_ts
+        reserved = await self._reserve_entry_cb(
+            side.plan.side, window_start
+        )
         if not reserved:
             side.last_reason = "same-side-limit"
             self._log_skip("same-side-limit", side, now)
@@ -430,7 +433,7 @@ class AssetRunner:
             )
             self._on_state_change()
         finally:
-            await self._release_entry_cb(side.plan.side)
+            await self._release_entry_cb(side.plan.side, window_start)
 
     async def _exit(
         self,
@@ -879,10 +882,10 @@ class MultiAssetRunner:
         self._last_daily_warn = 0.0
         self._started_at = time.time()
         self._entry_lock = asyncio.Lock()
-        self._entry_reservations: dict[Side, int] = {
-            Side.UP: 0,
-            Side.DOWN: 0,
-        }
+        # (side, window_start) -> in-flight entry attempts.  Keyed per
+        # window so a settled position from the previous window cannot
+        # block entries in the next one.
+        self._entry_reservations: dict[tuple[Side, int], int] = {}
 
         # Build every configured asset, including disabled ones: the Web
         # config page can turn a coin on without restarting the process.
@@ -908,23 +911,67 @@ class MultiAssetRunner:
             1 for pos in self.all_positions() if pos.side is side
         )
 
-    async def reserve_entry(self, side: Side) -> bool:
-        """Reserve one same-side slot, including in-flight entry attempts."""
-        limit = int(self.settings.execution.max_same_side_positions)
-        if limit <= 0:
+    def same_side_open_in_window(self, side: Side, window_start: int) -> int:
+        """Open same-side positions opened in one 5m window.
+
+        Positions from earlier windows that are still in settlement do not
+        count: they are no longer at risk and must not block the new window.
+        """
+        return sum(
+            1
+            for pos in self.all_positions()
+            if pos.side is side and pos.window_start == window_start
+        )
+
+    def _same_side_reserved(self, side: Side) -> int:
+        return sum(
+            n
+            for (reserved_side, _), n in self._entry_reservations.items()
+            if reserved_side is side
+        )
+
+    async def reserve_entry(self, side: Side, window_start: int) -> bool:
+        """Reserve one same-side entry slot for ``window_start``.
+
+        Two caps apply: the global concurrent same-side cap and the
+        per-window cap that limits correlated entries in one 5m window.
+        In-flight attempts count too, so two assets cannot both pass the
+        check at the same moment.
+        """
+        e = self.settings.execution
+        limit_total = int(e.max_same_side_positions)
+        limit_window = int(e.max_same_side_per_window)
+        if limit_total <= 0 and limit_window <= 0:
             return True
+        window_start = int(window_start)
+        key = (side, window_start)
         async with self._entry_lock:
-            used = self.same_side_open(side) + self._entry_reservations[side]
-            if used >= limit:
-                return False
-            self._entry_reservations[side] += 1
+            if limit_total > 0:
+                used_total = (
+                    self.same_side_open(side) + self._same_side_reserved(side)
+                )
+                if used_total >= limit_total:
+                    return False
+            if limit_window > 0:
+                used_window = (
+                    self.same_side_open_in_window(side, window_start)
+                    + self._entry_reservations.get(key, 0)
+                )
+                if used_window >= limit_window:
+                    return False
+            self._entry_reservations[key] = (
+                self._entry_reservations.get(key, 0) + 1
+            )
             return True
 
-    async def release_entry(self, side: Side) -> None:
+    async def release_entry(self, side: Side, window_start: int) -> None:
+        key = (side, int(window_start))
         async with self._entry_lock:
-            self._entry_reservations[side] = max(
-                0, self._entry_reservations[side] - 1
-            )
+            left = self._entry_reservations.get(key, 0) - 1
+            if left > 0:
+                self._entry_reservations[key] = left
+            else:
+                self._entry_reservations.pop(key, None)
 
     def enabled_assets(self) -> set[str]:
         out: set[str] = set()
@@ -1391,6 +1438,9 @@ class MultiAssetRunner:
             "uptime_s": round(now_f - self._started_at, 1),
             "config_version": self.runtime.version,
             "max_same_side_positions": self.settings.execution.max_same_side_positions,
+            "max_same_side_per_window": (
+                self.settings.execution.max_same_side_per_window
+            ),
             "same_side_open": {
                 "UP": self.same_side_open(Side.UP),
                 "DOWN": self.same_side_open(Side.DOWN),

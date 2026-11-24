@@ -325,11 +325,50 @@ async def test_same_side_limit(tmp_path):
 
     class _P:
         side = Side.UP
+        window_start = T0
 
     runner.all_positions = lambda: [_P() for _ in range(6)]  # type: ignore[method-assign]
     assert runner.same_side_open(Side.UP) == 6
-    assert await runner.reserve_entry(Side.UP) is False
-    assert await runner.reserve_entry(Side.DOWN) is True
+    assert await runner.reserve_entry(Side.UP, T0) is False
+    assert await runner.reserve_entry(Side.DOWN, T0) is True
+
+
+@pytest.mark.asyncio
+async def test_same_side_per_window_limit(tmp_path):
+    """At most 3 same-side entries per window; old windows do not block."""
+    settings = _settings()
+    runtime = RuntimeConfig(tmp_path / "runtime_config.json", settings.assets)
+    runner = MultiAssetRunner(
+        settings,
+        None,
+        PriceCache(),
+        FakeMarketService(_window()),
+        FakeBroker(),
+        StateStore(tmp_path),
+        runtime=runtime,
+    )
+
+    class _P:
+        def __init__(self, side, window_start):
+            self.side = side
+            self.window_start = window_start
+
+    runner.all_positions = lambda: [_P(Side.UP, T0) for _ in range(3)]  # type: ignore[method-assign]
+    assert runner.same_side_open_in_window(Side.UP, T0) == 3
+    assert runner.same_side_open_in_window(Side.UP, T0 - 300) == 0
+    assert await runner.reserve_entry(Side.UP, T0) is False
+    assert await runner.reserve_entry(Side.DOWN, T0) is True
+    # Positions still settling from the previous window must not block the
+    # next one.
+    assert await runner.reserve_entry(Side.UP, T0 + 300) is True
+
+    # In-flight attempts reserve slots too, so concurrent assets cannot all
+    # pass the check before any fill lands.
+    for _ in range(3):
+        assert await runner.reserve_entry(Side.DOWN, T0 + 600) is True
+    assert await runner.reserve_entry(Side.DOWN, T0 + 600) is False
+    await runner.release_entry(Side.DOWN, T0 + 600)
+    assert await runner.reserve_entry(Side.DOWN, T0 + 600) is True
 
 
 @pytest.mark.asyncio

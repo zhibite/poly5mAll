@@ -171,7 +171,7 @@ class FeedConfig:
 class ExecutionConfig:
     paper_trading: bool = True
     live_enabled: bool = False
-    stake_usd: float = 5.0
+    stake_usd: float = 3.0
     # Default taker fee rate for assets without a per-asset override.
     # Polymarket charges 0.05 on BTC 5m markets and 0.01 on the other
     # crypto 5m markets; see [ASSETS.<NAME>] TAKER_FEE_RATE.
@@ -193,6 +193,10 @@ class ExecutionConfig:
     # Max concurrent open positions with the same side (UP or DOWN) across
     # all assets.  0 disables the cap.
     max_same_side_positions: int = 6
+    # Max same-side entries inside one 5m window, across all assets.  The
+    # crypto 5m markets are highly correlated, so four UP entries in one
+    # window are effectively one leveraged bet.  0 disables the cap.
+    max_same_side_per_window: int = 3
     entry_retry_s: float = 1.0
     exit_retry_s: float = 1.0
     slippage_pct: float = 2.0
@@ -438,7 +442,7 @@ def load_settings(config_path: str | Path | None = None) -> Settings:
             "LIVE_ENABLED", _as_bool(_get(exec_raw, "LIVE_ENABLED", False), False)
         ),
         stake_usd=_env_float(
-            "STAKE_USD", _as_float(_get(exec_raw, "STAKE_USD", 5.0), 5.0)
+            "STAKE_USD", _as_float(_get(exec_raw, "STAKE_USD", 3.0), 3.0)
         ),
         taker_fee_rate=_env_float(
             "TAKER_FEE_RATE",
@@ -471,6 +475,14 @@ def load_settings(config_path: str | Path | None = None) -> Settings:
             int(
                 _as_float(
                     _get(exec_raw, "MAX_SAME_SIDE_POSITIONS", 6), 6
+                )
+            ),
+        ),
+        max_same_side_per_window=_env_int(
+            "MAX_SAME_SIDE_PER_WINDOW",
+            int(
+                _as_float(
+                    _get(exec_raw, "MAX_SAME_SIDE_PER_WINDOW", 3), 3
                 )
             ),
         ),
@@ -741,6 +753,8 @@ def validate_settings(settings: Settings) -> None:
         raise ConfigError("MIN_ENTRY_BID_DEPTH_USD must be >= 0")
     if e.max_same_side_positions < 0:
         raise ConfigError("MAX_SAME_SIDE_POSITIONS must be >= 0")
+    if e.max_same_side_per_window < 0:
+        raise ConfigError("MAX_SAME_SIDE_PER_WINDOW must be >= 0")
     if settings.feed.ws_shards < 1:
         raise ConfigError("WS_SHARDS must be >= 1")
     if settings.feed.book_poll_s < 0.5:

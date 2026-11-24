@@ -15,7 +15,7 @@ _BODY = r"""
   </div>
 </div>
 
-<div class="stats-row">
+<div class="stats-row stats-row-4">
   <div class="stat-card">
     <div class="stat-label">今日净 PnL (UTC)</div>
     <div class="stat-value" id="today-pnl">--</div>
@@ -36,11 +36,23 @@ _BODY = r"""
     <div class="stat-value orange" id="profit-factor">--</div>
     <div class="stat-sub" id="pf-sub">--</div>
   </div>
-  <div class="stat-card">
-    <div class="stat-label">新开仓</div>
-    <div class="stat-value" id="entries">--</div>
-    <div class="stat-sub" id="entries-sub">--</div>
+</div>
+
+<div class="clock-bar">
+  <div class="clock-item">
+    <span class="clock-label">系统时间 UTC</span>
+    <b id="sys-clock">--:--:--</b>
+    <span class="clock-sub" id="local-clock">本地 --:--:--</span>
   </div>
+  <div class="clock-item">
+    <span class="clock-label">5m 窗口 本地</span>
+    <b id="window-range">--:-- – --:--</b>
+  </div>
+  <div class="clock-item">
+    <span class="clock-label">本窗剩余</span>
+    <b id="window-left" class="orange">--:--</b>
+  </div>
+  <div class="clock-progress"><div id="window-fill"></div></div>
 </div>
 
 <div class="control-bar">
@@ -89,6 +101,41 @@ _BODY = r"""
 
 _SCRIPT = r"""
 let STATE = null;
+// Server clock minus browser clock, refreshed with every /api/status call.
+let SERVER_OFFSET_MS = 0;
+const WINDOW_SEC = 300;
+
+const fmtUtcHms = (d) => String(d.getUTCHours()).padStart(2, '0') + ':'
+  + String(d.getUTCMinutes()).padStart(2, '0') + ':'
+  + String(d.getUTCSeconds()).padStart(2, '0');
+const fmtLocalHms = (d) => String(d.getHours()).padStart(2, '0') + ':'
+  + String(d.getMinutes()).padStart(2, '0') + ':'
+  + String(d.getSeconds()).padStart(2, '0');
+
+function tickWindowClock() {
+  const serverMs = Date.now() + SERVER_OFFSET_MS;
+  const serverDate = new Date(serverMs);
+  const localDate = new Date();
+  const nowS = serverMs / 1000;
+  const start = Math.floor(nowS / WINDOW_SEC) * WINDOW_SEC;
+  const end = start + WINDOW_SEC;
+  const left = Math.max(0, end - nowS);
+
+  const sc = $('sys-clock');
+  if (sc) sc.textContent = fmtUtcHms(serverDate);
+  const lc = $('local-clock');
+  if (lc) lc.textContent = '本地 ' + fmtLocalHms(localDate);
+  const range = $('window-range');
+  if (range) range.textContent = fmtLocalHms(new Date(start * 1000))
+    + ' – ' + fmtLocalHms(new Date(end * 1000));
+  const wl = $('window-left');
+  if (wl) wl.textContent = String(Math.floor(left / 60)).padStart(2, '0')
+    + ':' + String(Math.floor(left % 60)).padStart(2, '0');
+  const fill = $('window-fill');
+  if (fill) fill.style.width = (((nowS - start) / WINDOW_SEC) * 100).toFixed(1) + '%';
+}
+setInterval(tickWindowClock, 1000);
+tickWindowClock();
 
 function renderAssets(s) {
   const rows = [];
@@ -166,21 +213,21 @@ async function refresh() {
   try {
     const s = await getJSON('/api/status');
     STATE = s;
+    if (s.ts) SERVER_OFFSET_MS = Number(s.ts) * 1000 - Date.now();
+    tickWindowClock();
     $('mode').textContent = s.mode === 'live' ? '实盘' : '纸面';
     $('mode').className = s.mode === 'live' ? 'red' : 'green';
     $('cfgver').textContent = 'v' + (s.config_version ?? 0);
     $('uptime').textContent = '运行 ' + Math.round(s.uptime_s || 0) + ' 秒';
-    $('entries').textContent = s.entries_allowed ? '允许' : '禁止';
-    $('entries').className = 'stat-value ' + (s.entries_allowed ? 'green' : 'red');
-    $('entries-sub').textContent = s.entries_allowed
-      ? '可开新仓' : (s.entries_block_reason || '');
     $('pause').textContent = s.paused ? '恢复新开仓' : '暂停新开仓';
     const ss = s.same_side_open || {};
     const sideLimit = s.max_same_side_positions ?? '--';
+    const winLimit = s.max_same_side_per_window ?? '--';
     $('mode-note').textContent = (s.mode === 'live'
       ? '实盘模式：真实 CLOB FAK 订单'
       : '纸面模式：实时订单簿模拟成交，已扣官方 taker 费（BTC 5% / 其他 1%）')
-      + ` · 同向 UP ${ss.UP ?? 0}/${sideLimit} · DOWN ${ss.DOWN ?? 0}/${sideLimit}`;
+      + ` · 同向 UP ${ss.UP ?? 0}/${sideLimit} · DOWN ${ss.DOWN ?? 0}/${sideLimit}`
+      + ` · 单窗同向 ≤${winLimit}`;
     $('mode-note').className = 'control-meta ' + (s.mode === 'live' ? 'red' : 'muted');
     renderAssets(s);
 

@@ -159,7 +159,8 @@ function render() {
   $('mode').className = 'stat-value ' + (cfg.mode === 'live' ? 'red' : 'green');
   $('fee-rate').textContent = fmt(Number(cfg.taker_fee_rate) * 100, 1) + '%';
   $('global-stake').textContent = fmt(cfg.stake_usd, 0) + ' U';
-  $('same-limit').textContent = String(cfg.max_same_side_positions ?? '--');
+  $('same-limit').textContent = String(cfg.max_same_side_positions ?? '--')
+    + '（单窗 ' + String(cfg.max_same_side_per_window ?? '--') + '）';
   $('min-depth').textContent = fmt(cfg.min_entry_bid_depth_usd, 0);
   const enabled = (cfg.assets || []).filter((a) => a.enabled).length;
   $('enabled-count').textContent = enabled + ' / ' + (cfg.assets || []).length;

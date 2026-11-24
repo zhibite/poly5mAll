@@ -30,6 +30,7 @@ nav .nav-user { color:#9ca3af; }
 
 .stats-row { display:grid; grid-template-columns:repeat(5,minmax(0,1fr));
              gap:16px; margin-bottom:24px; }
+.stats-row-4 { grid-template-columns:repeat(4,minmax(0,1fr)); }
 .stat-card { background:#12122a; border:1px solid #1e1e3a; border-radius:10px;
              padding:20px; }
 .stat-label { font-size:12px; color:#6b7280; text-transform:uppercase;
@@ -38,6 +39,20 @@ nav .nav-user { color:#9ca3af; }
 .stat-sub { font-size:12px; color:#6b7280; margin-top:4px; }
 .green { color:#10b981; } .red { color:#ef4444; }
 .purple { color:#a78bfa; } .orange { color:#fb923c; } .muted { color:#6b7280; }
+
+.clock-bar { display:flex; align-items:center; gap:22px; flex-wrap:wrap;
+             background:#12122a; border:1px solid #1e1e3a; border-radius:12px;
+             padding:12px 18px; margin-bottom:20px; }
+.clock-item { display:flex; align-items:baseline; gap:8px; }
+.clock-label { font-size:11px; color:#6b7280; text-transform:uppercase;
+               letter-spacing:.05em; }
+.clock-bar b { font-size:18px; font-weight:700; color:#d1d5db;
+               font-variant-numeric:tabular-nums; }
+.clock-sub { font-size:11px; color:#6b7280; font-variant-numeric:tabular-nums; }
+.clock-progress { flex:1 1 180px; min-width:120px; height:6px;
+                  background:#1e1e3a; border-radius:3px; overflow:hidden; }
+#window-fill { height:100%; width:0%; background:#a78bfa;
+               transition:width .25s linear; }
 
 .section { background:#12122a; border:1px solid #1e1e3a; border-radius:10px;
            padding:20px; margin-bottom:24px; }
@@ -208,11 +223,13 @@ footer { text-align:center; color:#4b5563; font-size:12px; padding:20px 0 40px; 
   nav .brand { margin-right:4px; font-size:15px; }
   nav a { padding:6px 9px; font-size:13px; }
   nav .nav-right { margin-left:auto; gap:6px; font-size:11px; }
-  .stats-row { grid-template-columns:repeat(2,minmax(0,1fr));
+  .stats-row, .stats-row-4 { grid-template-columns:repeat(2,minmax(0,1fr));
                gap:10px; margin-bottom:16px; }
   .stat-card { padding:14px; }
   .stat-value { font-size:21px; }
   .stat-label { font-size:10px; }
+  .clock-bar { gap:12px; padding:10px 14px; }
+  .clock-bar b { font-size:15px; }
   .timeline-seg { font-size:0; }
   .section { padding:14px; margin-bottom:16px; }
   table { font-size:12px; }
