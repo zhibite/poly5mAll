@@ -231,6 +231,8 @@ class MarketService:
                     up_token,
                     down_token,
                     str(market.get("conditionId") or ""),
+                    str(tokens[0].get("position_id") or ""),
+                    str(tokens[1].get("position_id") or ""),
                 )
             )
 
@@ -245,14 +247,20 @@ class MarketService:
         # normally discovered ahead of time, but even at startup this is
         # part of discovery rather than the per-tick hot path.
         ticks = await asyncio.gather(
-            *(self._tick_size(up) for _, _, up, _, _ in candidates),
+            *(self._tick_size(up) for _, _, up, *_ in candidates),
             return_exceptions=True,
         )
 
         added = 0
-        for (start, slug, up_token, down_token, condition_id), tick in zip(
-            candidates, ticks
-        ):
+        for (
+            start,
+            slug,
+            up_token,
+            down_token,
+            condition_id,
+            up_position,
+            down_position,
+        ), tick in zip(candidates, ticks):
             if not isinstance(tick, (int, float)) or float(tick) <= 0:
                 tick = 0.01
             window = MarketWindow(
@@ -262,6 +270,8 @@ class MarketService:
                 end_ts=start + self._window_sec,
                 up_token=up_token,
                 down_token=down_token,
+                up_position_id=up_position,
+                down_position_id=down_position,
                 condition_id=condition_id,
                 tick_size=float(tick),
                 fee_rate_bps=-1,

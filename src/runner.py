@@ -215,6 +215,11 @@ class AssetRunner:
             # these markets may quote on 0.001.
             if window.tick_size > 0:
                 pos.tick_size = window.tick_size
+            # State written before the Exchange V3 routing fix carries no
+            # position id; the freshly discovered window supplies it so the
+            # live exit is not signed with the legacy token-id path.
+            if not pos.exchange_position_id:
+                pos.exchange_position_id = window.position(pos.side)
             adopted.append(pos)
             log.info(
                 "[{}] adopted {} {} shares={:.4f} entry={:.4f} tp={:.4f}",
@@ -370,6 +375,7 @@ class AssetRunner:
                     limit,
                     self.window.tick_size,
                     fee_rate=self.current_cfg().taker_fee_rate,
+                    position_id=self.window.position(side.plan.side),
                 )
             except Exception as exc:  # noqa: BLE001
                 side.on_entry_missed(now)
@@ -540,6 +546,7 @@ class AssetRunner:
                 limit,
                 tick,
                 fee_rate=self.current_cfg().taker_fee_rate,
+                position_id=pos.exchange_position_id,
             )
         except Exception as exc:  # noqa: BLE001
             side.on_exit_missed(now)
@@ -690,6 +697,7 @@ class AssetRunner:
                     tick,
                     tick,
                     fee_rate=self.current_cfg().taker_fee_rate,
+                    position_id=pos.exchange_position_id,
                 )
             except Exception as exc:  # noqa: BLE001
                 log.warning("[{}] flatten sell error: {}", self.asset, exc)

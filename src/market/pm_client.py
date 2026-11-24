@@ -197,11 +197,23 @@ class PolymarketClient:
                     if up_token in seen_tokens or down_token in seen_tokens:
                         continue
                     seen_tokens.update((up_token, down_token))
+                    # Newer ("v2") markets carry position ids and must be
+                    # signed against Exchange V3; legacy markets leave these
+                    # empty and keep the clob token-id path.
+                    up_position, down_position = _positions_from_market(market)
                     found.append(
                         {
                             "tokens": [
-                                {"token_id": up_token, "outcome": "Up"},
-                                {"token_id": down_token, "outcome": "Down"},
+                                {
+                                    "token_id": up_token,
+                                    "outcome": "Up",
+                                    "position_id": up_position,
+                                },
+                                {
+                                    "token_id": down_token,
+                                    "outcome": "Down",
+                                    "position_id": down_position,
+                                },
                             ],
                             "_event_slug": ev_slug,
                             "_window_start_ts": int(start_ts),
@@ -422,11 +434,12 @@ def _outcome_prices(market: dict[str, Any]) -> list[float]:
     return out
 
 
-def _tokens_from_market(market: dict[str, Any]) -> tuple[str, str] | None:
-    """Map Gamma's ``clobTokenIds`` to (up_token, down_token)."""
-    token_ids = _json_list(market.get("clobTokenIds"))
-    if len(token_ids) < 2:
-        return None
+def _updown_indices(market: dict[str, Any]) -> tuple[int, int]:
+    """Outcome-array indices of the Up and Down legs.
+
+    ``clobTokenIds`` and ``positionIds`` are parallel to ``outcomes``.
+    When Gamma omits the labels, the historical positional order is Up, Down.
+    """
     outcomes = [x.strip().lower() for x in _outcome_labels(market)]
     up_idx = down_idx = None
     for idx, outcome in enumerate(outcomes):
@@ -435,12 +448,48 @@ def _tokens_from_market(market: dict[str, Any]) -> tuple[str, str] | None:
         elif outcome in ("down", "no") and down_idx is None:
             down_idx = idx
     if up_idx is None or down_idx is None:
-        # Gamma omitted outcomes: the historical positional order is Up, Down.
         up_idx, down_idx = 0, 1
+    return up_idx, down_idx
+
+
+def _tokens_from_market(market: dict[str, Any]) -> tuple[str, str] | None:
+    """Map Gamma's ``clobTokenIds`` to (up_token, down_token)."""
+    token_ids = _json_list(market.get("clobTokenIds"))
+    if len(token_ids) < 2:
+        return None
+    up_idx, down_idx = _updown_indices(market)
     if up_idx >= len(token_ids) or down_idx >= len(token_ids):
         return None
     up = str(token_ids[up_idx])
     down = str(token_ids[down_idx])
     if not up or not down or up == down:
         return None
+    return up, down
+
+
+def _positions_from_market(market: dict[str, Any]) -> tuple[str, str]:
+    """Map Gamma's ``positionIds`` to (up_position, down_position).
+
+    Newer ("v2") markets -- SOL/XRP/DOGE/BNB/HYPE -- are addressed by
+    position id and must be signed against Exchange V3.  Legacy markets
+    (BTC/ETH) omit the field; empty strings keep the token-id path.
+    """
+    position_ids = _json_list(market.get("positionIds"))
+    if len(position_ids) < 2:
+        if str(market.get("version") or "").strip().lower() == "v2":
+            # A v2 market without position ids cannot be signed for
+            # Exchange V3; the order would be rejected after posting, so
+            # surface the discovery problem here instead.
+            log.warning(
+                "gamma.v2_market_missing_position_ids slug={}",
+                market.get("slug"),
+            )
+        return "", ""
+    up_idx, down_idx = _updown_indices(market)
+    if up_idx >= len(position_ids) or down_idx >= len(position_ids):
+        return "", ""
+    up = str(position_ids[up_idx])
+    down = str(position_ids[down_idx])
+    if not up or not down or up == down:
+        return "", ""
     return up, down

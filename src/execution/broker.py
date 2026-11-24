@@ -33,6 +33,8 @@ class Broker(Protocol):
         limit_price: float,
         tick_size: float,
         fee_rate: float | None = None,
+        *,
+        position_id: str = "",
     ) -> Fill | None: ...
 
     async def sell(
@@ -42,6 +44,8 @@ class Broker(Protocol):
         limit_price: float,
         tick_size: float,
         fee_rate: float | None = None,
+        *,
+        position_id: str = "",
     ) -> Fill | None: ...
 
     async def token_balance(self, token_id: str) -> float | None: ...
@@ -169,7 +173,11 @@ class PaperBroker:
         limit_price: float,
         tick_size: float,
         fee_rate: float | None = None,
+        *,
+        position_id: str = "",
     ) -> Fill | None:
+        # ``position_id`` is a signing detail for live orders; paper fills
+        # are keyed by token id only.
         # The entry gate needs a two-sided REST book.  Do not fall back to
         # the WS top-of-book here: its depth is unknown, which is exactly
         # how the strategy ended up in tokens it could not exit.
@@ -231,7 +239,11 @@ class PaperBroker:
         limit_price: float,
         tick_size: float,
         fee_rate: float | None = None,
+        *,
+        position_id: str = "",
     ) -> Fill | None:
+        # ``position_id`` is a signing detail for live orders; paper fills
+        # are keyed by token id only.
         # Exits may use the WS top-of-book fallback; refusing to exit is
         # worse than exiting on a single fresh bid.
         bids, _ = await self._book(token_id, allow_bba_fallback=True)
@@ -338,6 +350,8 @@ class LiveBroker:
         limit_price: float,
         tick_size: float,
         fee_rate: float | None = None,
+        *,
+        position_id: str = "",
     ) -> Fill | None:
         if self.require_two_sided_book:
             if self._pm is None:
@@ -358,7 +372,12 @@ class LiveBroker:
                 )
                 return None
         return await self._clob.place_fak_buy(
-            token_id, usd_amount, limit_price, tick_size, fee_rate=fee_rate
+            token_id,
+            usd_amount,
+            limit_price,
+            tick_size,
+            fee_rate=fee_rate,
+            position_id=position_id,
         )
 
     def _log_no_fill(self, token_id: str, reason: str) -> None:
@@ -377,9 +396,16 @@ class LiveBroker:
         limit_price: float,
         tick_size: float,
         fee_rate: float | None = None,
+        *,
+        position_id: str = "",
     ) -> Fill | None:
         return await self._clob.place_fak_sell(
-            token_id, shares, limit_price, tick_size, fee_rate=fee_rate
+            token_id,
+            shares,
+            limit_price,
+            tick_size,
+            fee_rate=fee_rate,
+            position_id=position_id,
         )
 
     async def token_balance(self, token_id: str) -> float | None:

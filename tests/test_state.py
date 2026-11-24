@@ -24,6 +24,7 @@ def _position() -> Position:
         stake_usd=10.0,
         up_token="up-token",
         down_token="down-token",
+        exchange_position_id="pos-down",
         entry_quote_mid=0.235,
         entry_quote_bid=0.23,
         entry_quote_ask=0.24,
@@ -41,6 +42,7 @@ def test_state_roundtrip(tmp_path):
     assert len(positions) == 1
     assert positions[0].position_id == "BTC-DOWN-1800000000"
     assert positions[0].side is Side.DOWN
+    assert positions[0].exchange_position_id == "pos-down"
     assert positions[0].entry_quote_spread == pytest.approx(0.01)
     assert positions[0].entry_quote_source == "ws_bba"
     assert positions[0].entry_quote_ts == pytest.approx(1_800_000_010.0)

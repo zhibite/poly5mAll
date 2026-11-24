@@ -10,6 +10,11 @@ only the paths strategy 1 needs are kept.
 Both directions are takers, so the official fee applies:
 ``shares * rate * p * (1 - p)``, with a market-specific rate
 (BTC 5m = 0.05, other crypto 5m = 0.01).
+
+Order routing follows the market generation: newer ("v2") markets
+(SOL/XRP/DOGE/BNB/HYPE) are signed against Exchange V3 and must be sent
+with the market's position id, while legacy markets (BTC/ETH) keep the
+clob token-id path.  The SDK selects V3 only when a position id is given.
 """
 from __future__ import annotations
 
@@ -176,10 +181,16 @@ class CLOBClient:
         limit_price: float,
         tick_size: float = 0.01,
         fee_rate: float | None = None,
+        *,
+        position_id: str = "",
     ):
         """FAK BUY sized in USDC, walking the ask side up to ``limit_price``.
 
         ``fee_rate`` overrides the client default for this market.
+        ``position_id`` selects Exchange V3 signing for the newer ("v2")
+        markets; empty keeps the legacy token-id path.  The SDK signs
+        against V3 only when it receives a position id, which is why a
+        v2 market must never be sent down the token-id path.
         """
         if not self._client:
             return None
@@ -188,12 +199,17 @@ class CLOBClient:
         if price <= 0 or amount <= 0:
             return None
         try:
+            order_asset = (
+                {"position_id": position_id}
+                if position_id
+                else {"token_id": token_id}
+            )
             args = MarketOrderArgs(
-                token_id=token_id,
                 amount=float(amount),
                 side=ClobSide.BUY,
                 price=float(price),
                 order_type=OrderType.FAK,
+                **order_asset,
             )
             resp = await self._run(
                 self._client.create_and_post_market_order,
@@ -214,8 +230,14 @@ class CLOBClient:
         limit_price: float,
         tick_size: float = 0.01,
         fee_rate: float | None = None,
+        *,
+        position_id: str = "",
     ):
-        """FAK SELL sized in shares, crossing the bid side down to ``limit_price``."""
+        """FAK SELL sized in shares, crossing the bid side down to ``limit_price``.
+
+        ``position_id`` selects Exchange V3 signing for the newer ("v2")
+        markets; empty keeps the legacy token-id path.
+        """
         if not self._client:
             return None
         price = _round_down(limit_price, tick_size)
@@ -229,12 +251,17 @@ class CLOBClient:
         ):
             return None
         try:
+            order_asset = (
+                {"position_id": position_id}
+                if position_id
+                else {"token_id": token_id}
+            )
             args = MarketOrderArgs(
-                token_id=token_id,
                 amount=float(size),
                 side=ClobSide.SELL,
                 price=float(price),
                 order_type=OrderType.FAK,
+                **order_asset,
             )
             resp = await self._run(
                 self._client.create_and_post_market_order,

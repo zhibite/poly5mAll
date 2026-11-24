@@ -155,6 +155,7 @@ class SideRuntime:
             window_end=self.window.end_ts,
             slug=self.window.slug,
             token_id=self.window.token(self.plan.side),
+            exchange_position_id=self.window.position(self.plan.side),
             entry_ts=now,
             entry_price=float(fill.price),
             shares=float(fill.shares),

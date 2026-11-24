@@ -56,12 +56,21 @@ class MarketWindow:
     end_ts: int
     up_token: str
     down_token: str
+    # Newer ("v2") markets sign against Exchange V3 and are addressed by
+    # position id; legacy markets (BTC/ETH) leave these empty and use the
+    # clob token ids above.
+    up_position_id: str = ""
+    down_position_id: str = ""
     condition_id: str = ""
     tick_size: float = 0.01
     fee_rate_bps: int = 0
 
     def token(self, side: Side) -> str:
         return self.up_token if side is Side.UP else self.down_token
+
+    def position(self, side: Side) -> str:
+        """Exchange V3 position id for ``side`` ("" on legacy markets)."""
+        return self.up_position_id if side is Side.UP else self.down_position_id
 
     def seconds_since(self, now: float) -> float:
         return float(now) - float(self.start_ts)
@@ -138,6 +147,9 @@ class Position:
     stake_usd: float = 0.0
     up_token: str = ""
     down_token: str = ""
+    # Exchange V3 position id used to sign live SELLs on v2 markets.
+    # Persisted so a restart mid-window can still exit the position.
+    exchange_position_id: str = ""
     tick_size: float = 0.01
     entry_order_id: str = ""
     sold_shares: float = 0.0
@@ -190,6 +202,7 @@ class Position:
             "stake_usd": round(self.stake_usd, 4),
             "up_token": self.up_token,
             "down_token": self.down_token,
+            "exchange_position_id": self.exchange_position_id,
             "tick_size": self.tick_size,
             "entry_order_id": self.entry_order_id,
             "sold_shares": round(self.sold_shares, 8),
@@ -228,6 +241,7 @@ class Position:
             stake_usd=float(raw.get("stake_usd", raw.get("cost_usd", 0.0))),
             up_token=str(raw.get("up_token", "")),
             down_token=str(raw.get("down_token", "")),
+            exchange_position_id=str(raw.get("exchange_position_id", "") or ""),
             tick_size=float(raw.get("tick_size", 0.01)),
             entry_order_id=str(raw.get("entry_order_id", "")),
             sold_shares=float(raw.get("sold_shares", 0.0)),

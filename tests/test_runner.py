@@ -45,20 +45,38 @@ class FakeBroker:
     def __init__(self):
         self.buys = []
         self.sells = []
+        self.buy_position_ids = []
+        self.sell_position_ids = []
 
     async def buy(
-        self, token_id, usd_amount, limit_price, tick_size, fee_rate=None
+        self,
+        token_id,
+        usd_amount,
+        limit_price,
+        tick_size,
+        fee_rate=None,
+        *,
+        position_id="",
     ):
         self.buys.append((token_id, usd_amount, limit_price))
+        self.buy_position_ids.append(position_id)
         shares = usd_amount / 0.24
         return Fill(
             token_id, "BUY", shares, usd_amount, 0.24, 0.08, T0 + 10
         )
 
     async def sell(
-        self, token_id, shares, limit_price, tick_size, fee_rate=None
+        self,
+        token_id,
+        shares,
+        limit_price,
+        tick_size,
+        fee_rate=None,
+        *,
+        position_id="",
     ):
         self.sells.append((token_id, shares, limit_price))
+        self.sell_position_ids.append(position_id)
         price = 0.30 if limit_price < 0.30 else limit_price
         return Fill(
             token_id, "SELL", shares, shares * price, price, 0.05, T0 + 70
@@ -128,9 +146,91 @@ async def test_entry_then_take_profit(tmp_path):
     assert trades[0].entry_quote_ask == pytest.approx(0.24)
 
 
+@pytest.mark.asyncio
+async def test_position_ids_are_forwarded_to_the_broker(tmp_path):
+    """v2 markets: entry and exit must sign with the window's position id."""
+    settings = _settings()
+    window = dataclasses.replace(
+        _window(), up_position_id="pos-up", down_position_id="pos-down"
+    )
+    cache = PriceCache()
+    cache.set_best_bid_ask("down-token", 0.23, 0.24, ts=T0 + 10)
+    broker = FakeBroker()
+    runner = AssetRunner(
+        settings.assets[0],
+        settings,
+        broker,
+        cache,
+        FakeMarketService(window),
+        StateStore(tmp_path),
+        can_enter=lambda side: (True, "ok"),
+        on_trade=lambda r: None,
+        on_state_change=lambda: None,
+    )
+
+    await runner.tick(T0 + 10)
+    assert broker.buy_position_ids == ["pos-down"]
+    pos = runner.sides[0].position
+    assert pos is not None and pos.exchange_position_id == "pos-down"
+
+    cache.set_best_bid_ask("down-token", 0.30, 0.31, ts=T0 + 70)
+    await runner.tick(T0 + 70)
+    assert broker.sell_position_ids == ["pos-down"]
+
+
+@pytest.mark.asyncio
+async def test_restored_position_backfills_exchange_position_id(tmp_path):
+    """A state file written before the V3 fix must still exit on v2 markets."""
+    settings = _settings()
+    window = dataclasses.replace(_window(), down_position_id="pos-down")
+    cache = PriceCache()
+    cache.set_best_bid_ask("down-token", 0.23, 0.24, ts=T0 + 10)
+    broker = FakeBroker()
+    runner = AssetRunner(
+        settings.assets[0],
+        settings,
+        broker,
+        cache,
+        FakeMarketService(window),
+        StateStore(tmp_path),
+        can_enter=lambda side: (True, "ok"),
+        on_trade=lambda r: None,
+        on_state_change=lambda: None,
+    )
+    restored = Position(
+        position_id=f"BTC-DOWN-{T0}",
+        asset="BTC",
+        side=Side.DOWN,
+        window_start=T0,
+        window_end=T0 + 300,
+        slug=f"btc-updown-5m-{T0}",
+        token_id="down-token",
+        entry_ts=T0 + 5,
+        entry_price=0.24,
+        shares=40.0,
+        cost_usd=9.6,
+        entry_fee=0.0,
+        tp_price=0.264,
+        exchange_position_id="",  # old state file
+    )
+    runner.pending_positions.append(restored)
+
+    await runner.tick(T0 + 10)
+
+    assert runner.sides[0].position is restored
+    assert restored.exchange_position_id == "pos-down"
+
+
 class RaisingBroker(FakeBroker):
     async def buy(
-        self, token_id, usd_amount, limit_price, tick_size, fee_rate=None
+        self,
+        token_id,
+        usd_amount,
+        limit_price,
+        tick_size,
+        fee_rate=None,
+        *,
+        position_id="",
     ):
         raise RuntimeError("network down")
 
@@ -160,7 +260,14 @@ class GapBroker(FakeBroker):
     """Sell fill at the observed gapped bid (0.42), not at the target."""
 
     async def sell(
-        self, token_id, shares, limit_price, tick_size, fee_rate=None
+        self,
+        token_id,
+        shares,
+        limit_price,
+        tick_size,
+        fee_rate=None,
+        *,
+        position_id="",
     ):
         self.sells.append((token_id, shares, limit_price))
         price = 0.42
@@ -280,7 +387,14 @@ class BidBookBroker(FakeBroker):
         self.rejected: list[float] = []
 
     async def sell(
-        self, token_id, shares, limit_price, tick_size, fee_rate=None
+        self,
+        token_id,
+        shares,
+        limit_price,
+        tick_size,
+        fee_rate=None,
+        *,
+        position_id="",
     ):
         self.sells.append((token_id, shares, limit_price, tick_size))
         if limit_price > self.bid + 1e-12:
