@@ -171,7 +171,7 @@ class FeedConfig:
 class ExecutionConfig:
     paper_trading: bool = True
     live_enabled: bool = False
-    stake_usd: float = 2.0
+    stake_usd: float = 5.0
     # Default taker fee rate for assets without a per-asset override.
     # Polymarket charges 0.05 on BTC 5m markets and 0.01 on the other
     # crypto 5m markets; see [ASSETS.<NAME>] TAKER_FEE_RATE.
@@ -192,7 +192,7 @@ class ExecutionConfig:
     min_entry_bid_depth_usd: float = 5.0
     # Max concurrent open positions with the same side (UP or DOWN) across
     # all assets.  0 disables the cap.
-    max_same_side_positions: int = 3
+    max_same_side_positions: int = 6
     entry_retry_s: float = 1.0
     exit_retry_s: float = 1.0
     slippage_pct: float = 2.0
@@ -438,7 +438,7 @@ def load_settings(config_path: str | Path | None = None) -> Settings:
             "LIVE_ENABLED", _as_bool(_get(exec_raw, "LIVE_ENABLED", False), False)
         ),
         stake_usd=_env_float(
-            "STAKE_USD", _as_float(_get(exec_raw, "STAKE_USD", 2.0), 2.0)
+            "STAKE_USD", _as_float(_get(exec_raw, "STAKE_USD", 5.0), 5.0)
         ),
         taker_fee_rate=_env_float(
             "TAKER_FEE_RATE",
@@ -470,7 +470,7 @@ def load_settings(config_path: str | Path | None = None) -> Settings:
             "MAX_SAME_SIDE_POSITIONS",
             int(
                 _as_float(
-                    _get(exec_raw, "MAX_SAME_SIDE_POSITIONS", 3), 3
+                    _get(exec_raw, "MAX_SAME_SIDE_POSITIONS", 6), 6
                 )
             ),
         ),

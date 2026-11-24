@@ -34,9 +34,10 @@ def test_doc_defaults_load():
         "DOGE", "DOGE", "XRP", "XRP", "HYPE", "HYPE",
     ]
     assert s.execution.paper_trading is True
+    assert s.execution.stake_usd == pytest.approx(5.0)
     assert s.execution.require_two_sided_book is True
     assert s.execution.min_entry_bid_depth_usd == pytest.approx(5.0)
-    assert s.execution.max_same_side_positions == 3
+    assert s.execution.max_same_side_positions == 6
     assert s.feed.ws_shards == 7
     assert s.feed.book_poll_s == pytest.approx(3.0)
     assert s.mode == "paper"

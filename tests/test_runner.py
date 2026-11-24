@@ -219,8 +219,8 @@ async def test_same_side_limit(tmp_path):
     class _P:
         side = Side.UP
 
-    runner.all_positions = lambda: [_P(), _P(), _P()]  # type: ignore[method-assign]
-    assert runner.same_side_open(Side.UP) == 3
+    runner.all_positions = lambda: [_P() for _ in range(6)]  # type: ignore[method-assign]
+    assert runner.same_side_open(Side.UP) == 6
     assert await runner.reserve_entry(Side.UP) is False
     assert await runner.reserve_entry(Side.DOWN) is True
 
