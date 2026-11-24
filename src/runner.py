@@ -167,7 +167,6 @@ class AssetRunner:
                 line = fee_line(
                     plan,
                     include_fees=self.settings.execution.include_fees,
-                    fee_rate=self.settings.execution.taker_fee_rate,
                 )
                 if line.net_per_trade <= 0:
                     log.warning(
@@ -196,6 +195,7 @@ class AssetRunner:
                         entry_thresh=0.0,
                         tp_pct=0.0,
                         stake_usd=pos.stake_usd,
+                        taker_fee_rate=self.current_cfg().taker_fee_rate,
                     ),
                     window=window,
                 )
@@ -366,6 +366,7 @@ class AssetRunner:
                     side.plan.stake_usd,
                     limit,
                     self.window.tick_size,
+                    fee_rate=self.current_cfg().taker_fee_rate,
                 )
             except Exception as exc:  # noqa: BLE001
                 side.on_entry_missed(now)
@@ -481,7 +482,11 @@ class AssetRunner:
 
         try:
             fill = await self.broker.sell(
-                pos.token_id, pos.remaining_shares, limit, tick
+                pos.token_id,
+                pos.remaining_shares,
+                limit,
+                tick,
+                fee_rate=self.current_cfg().taker_fee_rate,
             )
         except Exception as exc:  # noqa: BLE001
             side.on_exit_missed(now)
@@ -594,6 +599,7 @@ class AssetRunner:
                     pos.remaining_shares,
                     tick,
                     tick,
+                    fee_rate=self.current_cfg().taker_fee_rate,
                 )
             except Exception as exc:  # noqa: BLE001
                 log.warning("[{}] flatten sell error: {}", self.asset, exc)

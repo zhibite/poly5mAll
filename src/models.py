@@ -249,6 +249,10 @@ class SidePlan:
     tp_pct: float
     stake_usd: float
     stop_loss_pct: float = 0.20
+    # Official taker fee rate for this market:
+    #   fee = shares * rate * p * (1 - p)
+    # BTC 5m markets are 0.05; other crypto 5m markets are 0.01.
+    taker_fee_rate: float = 0.01
 
     @property
     def key(self) -> str:

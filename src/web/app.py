@@ -235,15 +235,12 @@ def create_app(
         rows: list[dict[str, Any]] = []
         for asset in runtime.assets():
             for plan in asset.plans(e.stake_usd):
-                line = fee_line(
-                    plan,
-                    include_fees=e.include_fees,
-                    fee_rate=e.taker_fee_rate,
-                )
+                line = fee_line(plan, include_fees=e.include_fees)
                 rows.append(
                     {
                         "asset": plan.asset,
                         "side": plan.side.value,
+                        "taker_fee_rate": plan.taker_fee_rate,
                         "entry_thresh": plan.entry_thresh,
                         "tp_pct": plan.tp_pct,
                         "stake_usd": plan.stake_usd,
@@ -264,6 +261,7 @@ def create_app(
         for row in fee_rows:
             fees_by_asset.setdefault(row["asset"], []).append(row)
 
+        fee_rates = {a.asset: a.taker_fee_rate for a in runtime.assets()}
         assets: list[dict[str, Any]] = []
         for row in runtime.snapshot():
             name = row["asset"]
@@ -271,6 +269,7 @@ def create_app(
             assets.append(
                 {
                     **row,
+                    "taker_fee_rate": fee_rates.get(name, e.taker_fee_rate),
                     "effective_stake_usd": row["stake_usd"] or e.stake_usd,
                     "fees": fees,
                     "fee_negative": any(f["fee_negative"] for f in fees),

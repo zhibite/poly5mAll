@@ -60,3 +60,16 @@ def test_parse_base_units_and_fills_fallback():
 
 def test_parse_empty_response_returns_none():
     assert _client()._parse_fill("tok", "BUY", {}, 0.24, 0.01) is None
+
+
+def test_parse_fill_per_call_fee_rate_overrides_default():
+    fill = _client()._parse_fill(
+        "tok",
+        "BUY",
+        {"takingAmount": "40", "makingAmount": "10"},
+        0.25,
+        0.01,
+        fee_rate=0.05,
+    )
+    assert fill is not None
+    assert fill.fee == pytest.approx(40 * 0.05 * 0.25 * 0.75)

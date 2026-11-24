@@ -42,6 +42,11 @@ ASSET_DEFAULTS: dict[str, tuple[str, float, float]] = {
 # The doc's asset order, used when TRADE_ASSETS is not set.
 DEFAULT_ASSET_ORDER = ("BTC", "ETH", "BNB", "SOL", "DOGE", "XRP", "HYPE")
 
+# Official Polymarket taker fee rates for 5m crypto markets
+# (fee = shares * rate * p * (1 - p)): BTC is 5%, everything else is 1%.
+# Used only when neither config.toml nor the environment sets a rate.
+ASSET_DEFAULT_FEE_RATE: dict[str, float] = {"BTC": 0.05}
+
 # Price stop-loss retired: all assets default to 0 (off).  The 240s
 # time-based forced exit is the only stop-like exit.
 ASSET_DEFAULT_STOP_LOSS: dict[str, float] = {
@@ -167,7 +172,10 @@ class ExecutionConfig:
     paper_trading: bool = True
     live_enabled: bool = False
     stake_usd: float = 2.0
-    taker_fee_rate: float = 0.07
+    # Default taker fee rate for assets without a per-asset override.
+    # Polymarket charges 0.05 on BTC 5m markets and 0.01 on the other
+    # crypto 5m markets; see [ASSETS.<NAME>] TAKER_FEE_RATE.
+    taker_fee_rate: float = 0.01
     include_fees: bool = True
     # "observed": trigger on executable bid >= target; FAK sell at target
     #             floor, so the fill is the best bid (captures gaps above
@@ -236,6 +244,10 @@ class AssetConfig:
     tp_pct: float
     stake_usd: float | None = None
     stop_loss_pct: float = 0.20
+    # Official taker fee rate for this asset's 5m market (BTC = 0.05,
+    # everything else = 0.01).  Resolved from [ASSETS.<NAME>] TAKER_FEE_RATE,
+    # falling back to [EXECUTION] TAKER_FEE_RATE.
+    taker_fee_rate: float = 0.01
 
     def plans(self, default_stake: float) -> list[SidePlan]:
         stake = float(self.stake_usd or default_stake)
@@ -247,6 +259,7 @@ class AssetConfig:
                 tp_pct=float(self.tp_pct),
                 stake_usd=stake,
                 stop_loss_pct=float(self.stop_loss_pct),
+                taker_fee_rate=float(self.taker_fee_rate),
             )
             for side in self.sides
         ]
@@ -429,7 +442,7 @@ def load_settings(config_path: str | Path | None = None) -> Settings:
         ),
         taker_fee_rate=_env_float(
             "TAKER_FEE_RATE",
-            _as_float(_get(exec_raw, "TAKER_FEE_RATE", 0.07), 0.07),
+            _as_float(_get(exec_raw, "TAKER_FEE_RATE", 0.01), 0.01),
         ),
         include_fees=_env_bool(
             "INCLUDE_FEES", _as_bool(_get(exec_raw, "INCLUDE_FEES", True), True)
@@ -562,6 +575,16 @@ def _load_assets(
             f"{name}_TP_PCT",
             _as_float(_get(table, "TP_PCT", default_tp), default_tp),
         )
+        # Per-asset official fee rate.  The built-in schedule covers BTC
+        # even without config.toml; [EXECUTION] TAKER_FEE_RATE is the
+        # fallback for every asset without its own default/override.
+        fee_default = ASSET_DEFAULT_FEE_RATE.get(
+            name, execution.taker_fee_rate
+        )
+        fee = _env_float(
+            f"{name}_TAKER_FEE_RATE",
+            _as_float(_get(table, "TAKER_FEE_RATE", fee_default), fee_default),
+        )
         stake_raw = _env(f"{name}_STAKE_USD")
         stake = _get(table, "STAKE_USD", None)
         if stake_raw:
@@ -589,6 +612,7 @@ def _load_assets(
                 tp_pct=tp,
                 stake_usd=stake,
                 stop_loss_pct=sl,
+                taker_fee_rate=fee,
             )
         )
     return out
@@ -757,6 +781,10 @@ def validate_settings(settings: Settings) -> None:
             raise ConfigError(f"{asset.asset}: STAKE_USD must be > 0")
         if not (0.0 <= asset.stop_loss_pct < 1.0):
             raise ConfigError(f"{asset.asset}: STOP_LOSS_PCT must be in [0, 1)")
+        if not (0.0 <= asset.taker_fee_rate < 1.0):
+            raise ConfigError(
+                f"{asset.asset}: TAKER_FEE_RATE must be in [0, 1)"
+            )
 
 
 def fee_negative_plans(settings: Settings) -> list[str]:
@@ -768,7 +796,6 @@ def fee_negative_plans(settings: Settings) -> list[str]:
         line = fee_line(
             plan,
             include_fees=settings.execution.include_fees,
-            fee_rate=settings.execution.taker_fee_rate,
         )
         if line.net_per_trade <= 0:
             out.append(plan.key)
@@ -783,7 +810,8 @@ def describe(settings: Settings) -> str:
         f"window={settings.general.window_sec}s  entry<= {settings.general.entry_window_end_s:g}s  "
         f"tp=[{settings.general.tp_window_start_s:g},{settings.general.force_exit_s:g}]s  "
         f"force_exit>={settings.general.force_exit_s:g}s",
-        f"stake={e.stake_usd:g}U  fee_rate={e.taker_fee_rate:g}  include_fees={e.include_fees}",
+        f"stake={e.stake_usd:g}U  fee_rate_default={e.taker_fee_rate:g}  "
+        f"include_fees={e.include_fees}",
         (
             f"web=http://{settings.web.host}:{settings.web.port} "
             f"enabled={settings.web.enabled} "
@@ -796,6 +824,7 @@ def describe(settings: Settings) -> str:
         flag = "" if asset.enabled else "  [off]"
         lines.append(
             f"  {asset.asset:5} {sides:9} entry<={asset.entry_thresh:.2f}  "
-            f"tp={asset.tp_pct*100:.0f}%  stake={stake:g}U{flag}"
+            f"tp={asset.tp_pct*100:.0f}%  fee={asset.taker_fee_rate:g}  "
+            f"stake={stake:g}U{flag}"
         )
     return "\n".join(lines)

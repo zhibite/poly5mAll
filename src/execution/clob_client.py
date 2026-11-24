@@ -8,7 +8,8 @@ only the paths strategy 1 needs are kept.
     read  -> conditional token balance (restart reconciliation)
 
 Both directions are takers, so the official fee applies:
-``shares * 0.07 * p * (1 - p)``.
+``shares * rate * p * (1 - p)``, with a market-specific rate
+(BTC 5m = 0.05, other crypto 5m = 0.01).
 """
 from __future__ import annotations
 
@@ -63,7 +64,7 @@ class CLOBClient:
         api_passphrase: str = "",
         signature_type: int = 0,
         funder_address: str = "",
-        fee_rate: float = 0.07,
+        fee_rate: float = 0.01,
         include_fees: bool = True,
         fill_callback: Optional[Callable[[Any], None]] = None,
     ) -> None:
@@ -169,8 +170,12 @@ class CLOBClient:
         amount_usdc: float,
         limit_price: float,
         tick_size: float = 0.01,
+        fee_rate: float | None = None,
     ):
-        """FAK BUY sized in USDC, walking the ask side up to ``limit_price``."""
+        """FAK BUY sized in USDC, walking the ask side up to ``limit_price``.
+
+        ``fee_rate`` overrides the client default for this market.
+        """
         if not self._client:
             return None
         price = _round_down(limit_price, tick_size)
@@ -194,7 +199,7 @@ class CLOBClient:
             self._log_post_error("buy", token_id, exc)
             return None
         return self._parse_fill(
-            token_id, "BUY", resp, price, tick_size
+            token_id, "BUY", resp, price, tick_size, fee_rate=fee_rate
         )
 
     async def place_fak_sell(
@@ -203,6 +208,7 @@ class CLOBClient:
         shares: float,
         limit_price: float,
         tick_size: float = 0.01,
+        fee_rate: float | None = None,
     ):
         """FAK SELL sized in shares, crossing the bid side down to ``limit_price``."""
         if not self._client:
@@ -228,7 +234,7 @@ class CLOBClient:
             self._log_post_error("sell", token_id, exc)
             return None
         return self._parse_fill(
-            token_id, "SELL", resp, price, tick_size
+            token_id, "SELL", resp, price, tick_size, fee_rate=fee_rate
         )
 
     def _parse_fill(
@@ -238,6 +244,7 @@ class CLOBClient:
         resp: Any,
         limit_price: float,
         tick_size: float,
+        fee_rate: float | None = None,
     ):
         if not isinstance(resp, dict):
             return None
@@ -278,11 +285,8 @@ class CLOBClient:
             return None
 
         avg = usdc / shares
-        fee = (
-            taker_fee(shares, avg, self.fee_rate)
-            if self.include_fees
-            else 0.0
-        )
+        rate = self.fee_rate if fee_rate is None else float(fee_rate)
+        fee = taker_fee(shares, avg, rate) if self.include_fees else 0.0
         fill = Fill(
             token_id=token_id,
             side=side,

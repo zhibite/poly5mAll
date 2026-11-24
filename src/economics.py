@@ -1,13 +1,14 @@
 """Fee arithmetic and the startup fee report.
 
-Polymarket's crypto-category taker fee is
+Polymarket's taker fee is
 
     fee = shares * fee_rate * p * (1 - p)
 
-with ``fee_rate = 0.07`` (7%) and makers paying zero.  The formula is
-maximised at p = 0.5, so a round trip in a 5m market is expensive relative
-to the 10–25% TP targets used by strategy 1.  The doc's backtest excludes
-fees; this module makes the cost visible before a single order is sent.
+with a market-specific rate: 0.05 (5%) on BTC 5m markets and 0.01 (1%) on
+the other crypto 5m markets.  Makers pay zero.  The formula is maximised
+at p = 0.5, so a round trip is still expensive relative to the 10–25% TP
+targets used by strategy 1.  The doc's backtest excludes fees; this module
+makes the cost visible before a single order is sent.
 """
 from __future__ import annotations
 
@@ -45,6 +46,7 @@ def taker_fee(shares: float, price: float, rate: float) -> float:
 class FeeLine:
     asset: str
     side: str
+    fee_rate: float
     entry: float
     tp_pct: float
     tp_price: float
@@ -71,17 +73,23 @@ def fee_line(
     plan: SidePlan,
     *,
     include_fees: bool = True,
-    fee_rate: float = 0.07,
+    fee_rate: float | None = None,
     breakeven_scan_step: float = 0.001,
 ) -> FeeLine:
-    """Expected TP outcome for one asset/side at its configured entry."""
+    """Expected TP outcome for one asset/side at its configured entry.
+
+    ``fee_rate`` overrides the plan's own ``SidePlan.taker_fee_rate``
+    (which carries the market's official schedule).
+    """
     p = float(plan.entry_thresh)
     tp_pct = float(plan.tp_pct)
     tp_price = p * (1.0 + tp_pct)
     shares = plan.stake_usd / p if p > 0 else 0.0
 
     gross_per_share = p * tp_pct
-    rate = float(fee_rate) if include_fees else 0.0
+    rate = float(plan.taker_fee_rate if fee_rate is None else fee_rate)
+    if not include_fees:
+        rate = 0.0
     entry_fee = taker_fee(1.0, p, rate)
     exit_fee = taker_fee(1.0, tp_price, rate)
     net_per_share = gross_per_share - entry_fee - exit_fee
@@ -92,6 +100,7 @@ def fee_line(
     return FeeLine(
         asset=plan.asset,
         side=plan.side.value,
+        fee_rate=rate,
         entry=p,
         tp_pct=tp_pct,
         tp_price=tp_price,
@@ -137,25 +146,30 @@ def breakeven_tp(
 
 
 def fee_table(plans: list[SidePlan], *, include_fees: bool = True,
-              fee_rate: float = 0.07) -> str:
-    """Human-readable table for --check and the startup log."""
+              fee_rate: float | None = None) -> str:
+    """Human-readable table for --check and the startup log.
+
+    Each plan uses its own official taker rate unless ``fee_rate`` forces
+    one value for every row.
+    """
     lines = [
         "Per-trade TP economics (1 share basis; doc params, taker fees):",
-        "asset side  entry  tp%   tp$    gross   fees    net     net/trade be_tp",
-        "--------------------------------------------------------------------------------",
+        "asset side   fee  entry   tp%    tp$    gross    fees     net  net/trade  be_tp",
+        "------------------------------------------------------------------------------------",
     ]
     for plan in plans:
         ln = fee_line(plan, include_fees=include_fees, fee_rate=fee_rate)
         be = "n/a" if ln.breakeven_tp is None else f"{ln.breakeven_tp*100:5.1f}%"
         flag = "  <-- FEE-NEGATIVE" if ln.fee_negative and include_fees else ""
         lines.append(
-            f"{ln.asset:5} {ln.side:4} {ln.entry:6.3f} {ln.tp_pct*100:5.0f} "
-            f"{ln.tp_price:6.3f} {ln.gross_per_share:7.4f} "
+            f"{ln.asset:5} {ln.side:4} {ln.fee_rate*100:4.1f}% {ln.entry:6.3f} "
+            f"{ln.tp_pct*100:5.0f} {ln.tp_price:6.3f} "
+            f"{ln.gross_per_share:7.4f} "
             f"{ln.entry_fee_per_share + ln.exit_fee_per_share:7.4f} "
             f"{ln.net_per_share:7.4f} {ln.net_per_trade:+8.3f} {be:>7}{flag}"
         )
     lines.append(
-        "--------------------------------------------------------------------------------"
+        "------------------------------------------------------------------------------------"
     )
     lines.append(
         "net/trade is the expected profit on each plan's configured stake "

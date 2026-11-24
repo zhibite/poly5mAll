@@ -179,7 +179,7 @@ async function refresh() {
     const sideLimit = s.max_same_side_positions ?? '--';
     $('mode-note').textContent = (s.mode === 'live'
       ? '实盘模式：真实 CLOB FAK 订单'
-      : '纸面模式：实时订单簿模拟成交，已扣 0.07 taker 费')
+      : '纸面模式：实时订单簿模拟成交，已扣官方 taker 费（BTC 5% / 其他 1%）')
       + ` · 同向 UP ${ss.UP ?? 0}/${sideLimit} · DOWN ${ss.DOWN ?? 0}/${sideLimit}`;
     $('mode-note').className = 'control-meta ' + (s.mode === 'live' ? 'red' : 'muted');
     renderAssets(s);

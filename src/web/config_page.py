@@ -24,9 +24,9 @@ _BODY = r"""
     <div class="stat-sub">paper / live</div>
   </div>
   <div class="stat-card">
-    <div class="stat-label">taker 费率</div>
+    <div class="stat-label">默认 taker 费率</div>
     <div class="stat-value purple" id="fee-rate">--</div>
-    <div class="stat-sub">fee = shares × rate × p × (1-p)</div>
+    <div class="stat-sub">fee = shares × rate × p × (1-p)；各币见下表</div>
   </div>
   <div class="stat-card">
     <div class="stat-label">已启用</div>
@@ -50,8 +50,9 @@ _BODY = r"""
 <div class="alert info">
   <b>生效时机：</b>启用/关闭 <b>立即</b> 阻止/允许新开仓；方向、entry、TP、每笔仓位在
   <b>下一个 5m 窗口</b> 生效。已有仓位始终按原参数止盈/240s 强平。
-  密钥、端口、费率、`TP_EXECUTION_MODE`、流动性过滤和同向上限不在本页，
-  需改 <span class="mono">.env</span> / <span class="mono">config.toml</span>。
+  密钥、端口、`TP_EXECUTION_MODE`、流动性过滤和同向上限不在本页，
+  需改 <span class="mono">.env</span> / <span class="mono">config.toml</span>；
+  费率（官方费率，只读）见下表。
 </div>
 
 <div class="section">
@@ -73,10 +74,11 @@ _BODY = r"""
     <table>
       <thead><tr>
         <th>启用</th><th>币种</th><th>方向</th>
+        <th class="num">费率</th>
         <th class="num">entry ≤</th><th class="num">TP %</th>
         <th class="num">每笔 U</th>
       </tr></thead>
-      <tbody id="rows"><tr><td colspan="6" class="no-data">加载中...</td></tr></tbody>
+      <tbody id="rows"><tr><td colspan="7" class="no-data">加载中...</td></tr></tbody>
     </table>
   </div>
 </div>
@@ -155,7 +157,7 @@ function render() {
   $('runtime-path').textContent = cfg.runtime_path || '(not persisted)';
   $('mode').textContent = cfg.mode === 'live' ? '实盘' : '纸面';
   $('mode').className = 'stat-value ' + (cfg.mode === 'live' ? 'red' : 'green');
-  $('fee-rate').textContent = fmt(cfg.taker_fee_rate, 4);
+  $('fee-rate').textContent = fmt(Number(cfg.taker_fee_rate) * 100, 1) + '%';
   $('global-stake').textContent = fmt(cfg.stake_usd, 0) + ' U';
   $('same-limit').textContent = String(cfg.max_same_side_positions ?? '--');
   $('min-depth').textContent = fmt(cfg.min_entry_bid_depth_usd, 0);
@@ -190,6 +192,7 @@ function render() {
           <option value="BOTH" ${sideValue(a) === 'BOTH' ? 'selected' : ''}>BOTH（双向）</option>
         </select>
       </td>
+      <td class="num mono">${(Number(a.taker_fee_rate ?? cfg.taker_fee_rate) * 100).toFixed(1)}%</td>
       <td class="num"><input type="number" data-k="entry_thresh" step="0.01"
           min="0.01" max="0.99" style="width:90px" value="${a.entry_thresh}"></td>
       <td class="num"><input type="number" data-k="tp_pct" step="0.5"
@@ -199,7 +202,7 @@ function render() {
           min="1" style="width:90px" value="${stake}"
           placeholder="${cfg.stake_usd}"></td>
     </tr>`;
-  }).join('') || '<tr><td colspan="6" class="no-data">没有资产</td></tr>';
+  }).join('') || '<tr><td colspan="7" class="no-data">没有资产</td></tr>';
 
   for (const cb of document.querySelectorAll('#rows input[data-k="enabled"]')) {
     cb.addEventListener('change', () => {

@@ -27,11 +27,21 @@ class Broker(Protocol):
     mode: str
 
     async def buy(
-        self, token_id: str, usd_amount: float, limit_price: float, tick_size: float
+        self,
+        token_id: str,
+        usd_amount: float,
+        limit_price: float,
+        tick_size: float,
+        fee_rate: float | None = None,
     ) -> Fill | None: ...
 
     async def sell(
-        self, token_id: str, shares: float, limit_price: float, tick_size: float
+        self,
+        token_id: str,
+        shares: float,
+        limit_price: float,
+        tick_size: float,
+        fee_rate: float | None = None,
     ) -> Fill | None: ...
 
     async def token_balance(self, token_id: str) -> float | None: ...
@@ -124,7 +134,7 @@ class PaperBroker:
         pm: Any,
         price_cache: PriceCache,
         *,
-        fee_rate: float = 0.07,
+        fee_rate: float = 0.01,
         include_fees: bool = True,
         tick_size: float = 0.01,
         require_two_sided_book: bool = True,
@@ -143,8 +153,22 @@ class PaperBroker:
         self._last_no_fill_log: dict[str, float] = {}
 
     # ── broker API ─────────────────────────────────────────────────────
+    def _fee(
+        self, shares: float, price: float, fee_rate: float | None
+    ) -> float:
+        """Taker fee for a fill; ``fee_rate`` overrides the broker default."""
+        if not self.include_fees:
+            return 0.0
+        rate = self.fee_rate if fee_rate is None else float(fee_rate)
+        return taker_fee(shares, price, rate)
+
     async def buy(
-        self, token_id: str, usd_amount: float, limit_price: float, tick_size: float
+        self,
+        token_id: str,
+        usd_amount: float,
+        limit_price: float,
+        tick_size: float,
+        fee_rate: float | None = None,
     ) -> Fill | None:
         # The entry gate needs a two-sided REST book.  Do not fall back to
         # the WS top-of-book here: its depth is unknown, which is exactly
@@ -186,11 +210,7 @@ class PaperBroker:
             )
             return None
         avg = walk.avg_price
-        fee = (
-            taker_fee(walk.shares, avg, self.fee_rate)
-            if self.include_fees
-            else 0.0
-        )
+        fee = self._fee(walk.shares, avg, fee_rate)
         self.holdings[token_id] = self.holdings.get(token_id, 0.0) + walk.shares
         self.fills += 1
         return Fill(
@@ -205,7 +225,12 @@ class PaperBroker:
         )
 
     async def sell(
-        self, token_id: str, shares: float, limit_price: float, tick_size: float
+        self,
+        token_id: str,
+        shares: float,
+        limit_price: float,
+        tick_size: float,
+        fee_rate: float | None = None,
     ) -> Fill | None:
         # Exits may use the WS top-of-book fallback; refusing to exit is
         # worse than exiting on a single fresh bid.
@@ -225,11 +250,7 @@ class PaperBroker:
             )
             return None
         avg = walk.avg_price
-        fee = (
-            taker_fee(walk.shares, avg, self.fee_rate)
-            if self.include_fees
-            else 0.0
-        )
+        fee = self._fee(walk.shares, avg, fee_rate)
         self.holdings[token_id] = max(
             0.0, self.holdings.get(token_id, 0.0) - walk.shares
         )
@@ -311,7 +332,12 @@ class LiveBroker:
         self._last_no_fill_log: dict[str, float] = {}
 
     async def buy(
-        self, token_id: str, usd_amount: float, limit_price: float, tick_size: float
+        self,
+        token_id: str,
+        usd_amount: float,
+        limit_price: float,
+        tick_size: float,
+        fee_rate: float | None = None,
     ) -> Fill | None:
         if self.require_two_sided_book:
             if self._pm is None:
@@ -332,7 +358,7 @@ class LiveBroker:
                 )
                 return None
         return await self._clob.place_fak_buy(
-            token_id, usd_amount, limit_price, tick_size
+            token_id, usd_amount, limit_price, tick_size, fee_rate=fee_rate
         )
 
     def _log_no_fill(self, token_id: str, reason: str) -> None:
@@ -345,10 +371,15 @@ class LiveBroker:
         )
 
     async def sell(
-        self, token_id: str, shares: float, limit_price: float, tick_size: float
+        self,
+        token_id: str,
+        shares: float,
+        limit_price: float,
+        tick_size: float,
+        fee_rate: float | None = None,
     ) -> Fill | None:
         return await self._clob.place_fak_sell(
-            token_id, shares, limit_price, tick_size
+            token_id, shares, limit_price, tick_size, fee_rate=fee_rate
         )
 
     async def token_balance(self, token_id: str) -> float | None:

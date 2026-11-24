@@ -46,14 +46,18 @@ class FakeBroker:
         self.buys = []
         self.sells = []
 
-    async def buy(self, token_id, usd_amount, limit_price, tick_size):
+    async def buy(
+        self, token_id, usd_amount, limit_price, tick_size, fee_rate=None
+    ):
         self.buys.append((token_id, usd_amount, limit_price))
         shares = usd_amount / 0.24
         return Fill(
             token_id, "BUY", shares, usd_amount, 0.24, 0.08, T0 + 10
         )
 
-    async def sell(self, token_id, shares, limit_price, tick_size):
+    async def sell(
+        self, token_id, shares, limit_price, tick_size, fee_rate=None
+    ):
         self.sells.append((token_id, shares, limit_price))
         price = 0.30 if limit_price < 0.30 else limit_price
         return Fill(
@@ -125,7 +129,9 @@ async def test_entry_then_take_profit(tmp_path):
 
 
 class RaisingBroker(FakeBroker):
-    async def buy(self, token_id, usd_amount, limit_price, tick_size):
+    async def buy(
+        self, token_id, usd_amount, limit_price, tick_size, fee_rate=None
+    ):
         raise RuntimeError("network down")
 
 
@@ -153,7 +159,9 @@ async def test_broker_exception_resets_entry_state(tmp_path):
 class GapBroker(FakeBroker):
     """Sell fill at the observed gapped bid (0.42), not at the target."""
 
-    async def sell(self, token_id, shares, limit_price, tick_size):
+    async def sell(
+        self, token_id, shares, limit_price, tick_size, fee_rate=None
+    ):
         self.sells.append((token_id, shares, limit_price))
         price = 0.42
         return Fill(
@@ -271,7 +279,9 @@ class BidBookBroker(FakeBroker):
         self.bid = bid
         self.rejected: list[float] = []
 
-    async def sell(self, token_id, shares, limit_price, tick_size):
+    async def sell(
+        self, token_id, shares, limit_price, tick_size, fee_rate=None
+    ):
         self.sells.append((token_id, shares, limit_price, tick_size))
         if limit_price > self.bid + 1e-12:
             self.rejected.append(limit_price)

@@ -60,6 +60,24 @@ async def test_paper_buy_then_sell():
 
 
 @pytest.mark.asyncio
+async def test_paper_per_call_fee_rate_overrides_default():
+    """The per-asset rate passed by the runner wins over the broker default."""
+    pm = FakePM(
+        {
+            "asks": [{"price": "0.25", "size": "100"}],
+            "bids": [{"price": "0.30", "size": "100"}],
+        }
+    )
+    broker = PaperBroker(pm, PriceCache(), fee_rate=0.01, include_fees=True)
+    buy = await broker.buy("tok", 10.0, 0.25, 0.01, fee_rate=0.05)
+    assert buy is not None
+    assert buy.fee == pytest.approx(buy.shares * 0.05 * 0.25 * 0.75)
+    sell = await broker.sell("tok", buy.shares, 0.30, 0.01, fee_rate=0.05)
+    assert sell is not None
+    assert sell.fee == pytest.approx(sell.shares * 0.05 * 0.30 * 0.70)
+
+
+@pytest.mark.asyncio
 async def test_paper_sell_fills_at_subcent_bid():
     """A 0.001 residual bid is sellable once the real tick is used."""
     pm = FakePM({"asks": [], "bids": [{"price": "0.001", "size": "100"}]})

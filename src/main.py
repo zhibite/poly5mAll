@@ -128,7 +128,6 @@ def _print_config(settings: Settings) -> None:
         fee_table(
             settings.all_plans(),
             include_fees=settings.execution.include_fees,
-            fee_rate=settings.execution.taker_fee_rate,
         )
     )
     negative = fee_negative_plans(settings)
@@ -140,7 +139,7 @@ def _print_config(settings: Settings) -> None:
         )
         print(
             "         The doc's backtest excludes fees.  Paper PnL includes "
-            "them; set TAKER_FEE_RATE=0 only for doc-parity research."
+            "them; set INCLUDE_FEES=false only for doc-parity research."
         )
         if settings.execution.skip_fee_negative:
             print("         SKIP_FEE_NEGATIVE=true — those sides will not trade.")
@@ -341,9 +340,11 @@ def main(argv: list[str] | None = None) -> int:
 
     if settings.live:
         log.warning(
-            "LIVE MODE: real CLOB orders, stake={}U per trade, fee_rate={}",
+            "LIVE MODE: real CLOB orders, stake={}U per trade, fee_rates={}",
             settings.execution.stake_usd,
-            settings.execution.taker_fee_rate,
+            ",".join(
+                f"{a.asset}:{a.taker_fee_rate:g}" for a in settings.assets
+            ),
         )
         if (
             settings.credentials.signature_type != 0

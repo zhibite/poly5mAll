@@ -52,11 +52,14 @@ LIVE_ENABLED = false
 # Fixed stake per trade.  The doc's backtest used 10 U; live default is 2 U.
 STAKE_USD = 2.0
 
-# Official Polymarket taker fee for the crypto category:
+# Official Polymarket taker fee:
 #   fee = shares * rate * p * (1 - p)
-# Makers pay 0.  The doc's backtest excludes fees; keep this at 0.07 for
-# realistic paper PnL, or set 0 to reproduce the doc's gross numbers.
-TAKER_FEE_RATE = 0.07
+# Current crypto 5m schedule: BTC = 0.05, every other asset = 0.01.
+# This value is the default for assets without their own TAKER_FEE_RATE
+# (see [ASSETS.BTC] below); makers pay 0.  The doc's backtest excludes
+# fees; keep INCLUDE_FEES=true for realistic paper PnL, or set it false
+# to reproduce the doc's gross numbers.
+TAKER_FEE_RATE = 0.01
 INCLUDE_FEES = true
 
 # Take-profit execution:
@@ -139,6 +142,8 @@ ENABLED = true  # 默认只启用 BTC；其余币可通过 Web 配置页开启
 SIDES = "BOTH"
 ENTRY_THRESH = 0.25
 TP_PCT = 0.10
+# Official BTC 5m taker fee is 5% (other crypto 5m markets are 1%).
+TAKER_FEE_RATE = 0.05
 # Backtest: BTC 0.25/10% benefits from a 20% stop.
 
 [ASSETS.ETH]

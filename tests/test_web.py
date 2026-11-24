@@ -121,7 +121,15 @@ def test_config_defaults_and_update(client):
     assert by_name["ETH"]["enabled"] is False
     assert by_name["BTC"]["stop_loss_pct"] == pytest.approx(0.0)
     assert data["web"]["port"] == 8033
+    assert data["taker_fee_rate"] == pytest.approx(0.01)
+    assert by_name["BTC"]["taker_fee_rate"] == pytest.approx(0.05)
+    assert by_name["ETH"]["taker_fee_rate"] == pytest.approx(0.01)
     assert any(f["asset"] == "BTC" and f["side"] == "DOWN" for f in data["fee_lines"])
+    assert all(
+        f["taker_fee_rate"] == pytest.approx(0.05)
+        for f in data["fee_lines"]
+        if f["asset"] == "BTC"
+    )
 
     r = client.put(
         "/api/config",

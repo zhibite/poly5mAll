@@ -7,7 +7,7 @@ _BODY = r"""
 <div class="page-head">
   <div>
     <h1>交易记录</h1>
-    <div class="page-sub">已平仓交易 · 净 PnL 已扣 0.07 taker 费 · 表格时间为浏览器本地时间</div>
+    <div class="page-sub">已平仓交易 · 净 PnL 已扣官方 taker 费（BTC 5% / 其他 1%） · 表格时间为浏览器本地时间</div>
   </div>
   <div class="head-meta">数据源 <span class="mono">data/trades.jsonl</span></div>
 </div>

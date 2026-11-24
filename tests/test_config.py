@@ -41,13 +41,15 @@ def test_doc_defaults_load():
 
 
 def test_defaults_without_config_file(tmp_path):
-    # Even with no config.toml, the safe default is BTC-only and the
-    # price stop is off for every asset.
+    # Even with no config.toml, the safe default is BTC-only, the price
+    # stop is off, and the built-in official fee schedule still applies.
     s = load_settings(tmp_path / "missing.toml")
     assert [a.asset for a in s.assets if a.enabled] == ["BTC"]
     by_name = {a.asset: a for a in s.assets}
     assert by_name["BTC"].stop_loss_pct == pytest.approx(0.0)
     assert by_name["ETH"].stop_loss_pct == pytest.approx(0.0)
+    assert by_name["BTC"].taker_fee_rate == pytest.approx(0.05)
+    assert by_name["ETH"].taker_fee_rate == pytest.approx(0.01)
 
 
 def test_invalid_threshold_rejected():
@@ -58,12 +60,24 @@ def test_invalid_threshold_rejected():
         validate_settings(bad)
 
 
-def test_fee_negative_plans_reported():
-    s = load_settings()
-    keys = {p.key for p in s.all_plans()}
-    assert "XRP-UP" in keys
-    # The doc's BTC 0.25/10% TP does not cover the 0.07 round-trip fee.
+def test_per_asset_fee_rates():
+    from src.config import fee_negative_plans
     from src.economics import fee_line
 
-    btc = next(p for p in s.all_plans() if p.key == "BTC-DOWN")
-    assert fee_line(btc).net_per_trade < 0
+    s = load_settings()
+    by_name = {a.asset: a for a in s.assets}
+    # Official crypto 5m schedule: BTC 5%, every other asset 1%.
+    assert by_name["BTC"].taker_fee_rate == pytest.approx(0.05)
+    for name in ("ETH", "BNB", "SOL", "DOGE", "XRP", "HYPE"):
+        assert by_name[name].taker_fee_rate == pytest.approx(0.01)
+
+    plans = {p.key: p for p in s.all_plans()}
+    assert "XRP-UP" in plans
+    assert plans["BTC-DOWN"].taker_fee_rate == pytest.approx(0.05)
+    assert plans["ETH-DOWN"].taker_fee_rate == pytest.approx(0.01)
+
+    # Under the new schedule the doc's BTC 0.25/10% TP covers its fees.
+    line = fee_line(plans["BTC-DOWN"])
+    assert line.fee_rate == pytest.approx(0.05)
+    assert line.net_per_trade > 0
+    assert fee_negative_plans(s) == []

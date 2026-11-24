@@ -2,7 +2,7 @@
 
 Input is the list of dicts from ``trades.jsonl``.  Everything is computed
 from net PnL (fees included); gross and fees are reported alongside so the
-operator can see what the 0.07 taker rate is costing.
+operator can see what the per-asset taker fees are costing.
 """
 from __future__ import annotations
 
