@@ -246,11 +246,9 @@ class SideRuntime:
         )
 
     def on_dust_pending(self, now: float, reason: str) -> None:
-        """Stop selling a remainder below the CLOB minimum order size."""
+        """Stop selling a remainder the CLOB cannot accept."""
         position = self.position
         if position is None or position.is_flat:
-            return
-        if position.remaining_shares >= MIN_ORDER_SHARES - 1e-9:
             return
         self.status = SideStatus.SETTLE_PENDING
         self.closed_reason = "remainder_pending"

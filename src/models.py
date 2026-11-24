@@ -8,11 +8,13 @@ from typing import Any
 
 
 # CLOB market orders size in 0.01-share increments and require at least
-# 5 shares.  A remainder below SIZE_PRECISION is worth <1 cent and is
-# written off; a remainder below MIN_ORDER_SHARES but above that cannot be
-# sold and is left for Gamma settlement.
+# 5 shares and $1 of notional (a SELL is share-denominated, so it must
+# satisfy both).  A remainder below SIZE_PRECISION is worth <1 cent and
+# is written off; anything else that cannot meet both floors is left for
+# Gamma settlement.
 SIZE_PRECISION = 0.01
 MIN_ORDER_SHARES = 5.0
+MIN_ORDER_USD = 1.0
 
 
 class Side(str, Enum):

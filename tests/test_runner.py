@@ -552,3 +552,41 @@ async def test_forced_exit_below_min_size_waits_for_settlement(tmp_path):
     assert broker.sells == []
     assert trades == []
     assert runner.sides[0].status is SideStatus.SETTLE_PENDING
+
+
+@pytest.mark.asyncio
+async def test_live_remainder_below_min_notional_waits(tmp_path):
+    """Live SELLs also need $1 notional; 5 shares at 0.01 cannot post."""
+    settings = _settings()
+    settings = dataclasses.replace(
+        settings,
+        execution=dataclasses.replace(
+            settings.execution, paper_trading=False, live_enabled=True
+        ),
+    )
+    cache = PriceCache()
+    cache.set_best_bid_ask("down-token", 0.23, 0.24, ts=T0 + 10)
+    broker = FakeBroker()
+    trades = []
+    runner = AssetRunner(
+        settings.assets[0],
+        settings,
+        broker,
+        cache,
+        FakeMarketService(_window()),
+        StateStore(tmp_path),
+        can_enter=lambda side: (True, "ok"),
+        on_trade=trades.append,
+        on_state_change=lambda: None,
+    )
+
+    await runner.tick(T0 + 10)
+    pos = runner.sides[0].position
+    assert pos is not None
+    pos.sold_shares = pos.shares - 5.0
+    cache.set_best_bid_ask("down-token", 0.01, 0.02, ts=T0 + 250)
+
+    await runner.tick(T0 + 250)
+    assert broker.sells == []
+    assert trades == []
+    assert runner.sides[0].status is SideStatus.SETTLE_PENDING

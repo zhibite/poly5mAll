@@ -87,3 +87,10 @@ async def test_fak_sell_below_min_order_size_not_posted():
     c = _client()
     c._client = object()
     assert await c.place_fak_sell("tok", 4.99, 0.2, 0.01) is None
+
+
+@pytest.mark.asyncio
+async def test_fak_sell_below_min_notional_not_posted():
+    c = _client()
+    c._client = object()
+    assert await c.place_fak_sell("tok", 5.0, 0.1, 0.01) is None

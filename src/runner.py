@@ -27,6 +27,7 @@ from src.market.market_ws import MarketWS, MarketWSManager, PriceCache
 from src.market.service import MarketService
 from src.models import (
     MIN_ORDER_SHARES,
+    MIN_ORDER_USD,
     SIZE_PRECISION,
     DailyStats,
     MarketWindow,
@@ -513,6 +514,25 @@ class AssetRunner:
         else:
             limit = self._force_exit_limit(quote, tick)
 
+        if (
+            self.settings.live
+            and remaining * limit < MIN_ORDER_USD - 1e-9
+        ):
+            # Live market SELLs must clear both the 5-share and $1 floors.
+            # A low-priced remainder cannot be posted; settle its value.
+            side.on_dust_pending(now, reason)
+            log.warning(
+                "[{}] {} {} notional {:.4f}U < min order {:.2f}U; "
+                "waiting for settlement",
+                self.asset,
+                side.plan.side.value,
+                pos.position_id,
+                remaining * limit,
+                MIN_ORDER_USD,
+            )
+            self._on_state_change()
+            return
+
         try:
             fill = await self.broker.sell(
                 pos.token_id,
@@ -649,6 +669,20 @@ class AssetRunner:
             fresh = await self._fresh_tick(pos)
             if fresh is not None:
                 tick = fresh
+            if (
+                self.settings.live
+                and remaining * tick < MIN_ORDER_USD - 1e-9
+            ):
+                side.on_dust_pending(now, "shutdown")
+                log.warning(
+                    "[{}] {} notional {:.4f}U < min order {:.2f}U; "
+                    "left for settlement",
+                    self.asset,
+                    pos.position_id,
+                    remaining * tick,
+                    MIN_ORDER_USD,
+                )
+                continue
             try:
                 fill = await self.broker.sell(
                     pos.token_id,
