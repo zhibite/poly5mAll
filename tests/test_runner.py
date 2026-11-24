@@ -713,6 +713,12 @@ async def test_forced_exit_below_min_size_waits_for_settlement(tmp_path):
 
 
 @pytest.mark.asyncio
+class LiveFakeBroker(FakeBroker):
+    """Fake broker that reports the live mode, like ModeBroker does."""
+
+    mode = "live"
+
+
 async def test_live_remainder_below_min_notional_waits(tmp_path):
     """Live SELLs also need $1 notional; 5 shares at 0.01 cannot post."""
     settings = _settings()
@@ -724,7 +730,7 @@ async def test_live_remainder_below_min_notional_waits(tmp_path):
     )
     cache = PriceCache()
     cache.set_best_bid_ask("down-token", 0.23, 0.24, ts=T0 + 10)
-    broker = FakeBroker()
+    broker = LiveFakeBroker()
     trades = []
     runner = AssetRunner(
         settings.assets[0],

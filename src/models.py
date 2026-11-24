@@ -273,6 +273,11 @@ class SidePlan:
     tp_pct: float
     stake_usd: float
     stop_loss_pct: float = 0.20
+    # Per-asset forced-exit timing (seconds into the 5m window).
+    # The exit starts at force_exit_s and retries until
+    # force_exit_deadline_s; assets can override the global defaults.
+    force_exit_s: float = 240.0
+    force_exit_deadline_s: float = 295.0
     # Official taker fee rate for this market:
     #   fee = shares * rate * p * (1 - p)
     # BTC 5m markets are 0.05; other crypto 5m markets are 0.01.

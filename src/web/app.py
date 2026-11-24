@@ -48,6 +48,11 @@ class PauseBody(BaseModel):
     reason: str = ""
 
 
+class ModeBody(BaseModel):
+    mode: str = ""
+    confirm: str = ""
+
+
 class FlattenBody(BaseModel):
     confirm: str = ""
 
@@ -183,7 +188,7 @@ def create_app(
         payload = runner.status_payload()
         return {
             "ok": True,
-            "mode": settings.mode,
+            "mode": getattr(runner, "mode", settings.mode),
             "port": settings.web.port,
             "uptime_s": payload.get("uptime_s", 0.0),
         }
@@ -279,7 +284,9 @@ def create_app(
                 }
             )
         return {
-            "mode": settings.mode,
+            "mode": getattr(runner, "mode", settings.mode),
+            "live_available": getattr(runner, "live_available", False),
+            "live_allowed": getattr(runner, "live_allowed", settings.live),
             "paper_trading": e.paper_trading,
             "live_enabled": e.live_enabled,
             "stake_usd": e.stake_usd,
@@ -341,6 +348,27 @@ def create_app(
         return {"ok": True, **_config_payload()}
 
     # ── controls ──────────────────────────────────────────────────────
+    @app.post("/api/mode")
+    async def api_mode(
+        body: ModeBody,
+        _: None = Depends(require_auth),
+    ) -> dict[str, Any]:
+        target = str(body.mode or "").strip().lower()
+        if target not in ("paper", "live"):
+            raise HTTPException(
+                status_code=400, detail="mode must be 'paper' or 'live'"
+            )
+        if target == "live" and body.confirm != "LIVE":
+            raise HTTPException(
+                status_code=400,
+                detail='set confirm="LIVE" to switch to live trading',
+            )
+        try:
+            mode = runner.set_mode(target)
+        except (ValueError, RuntimeError) as exc:
+            raise HTTPException(status_code=400, detail=str(exc)) from exc
+        return {"ok": True, "mode": mode}
+
     @app.post("/api/pause")
     async def api_pause(
         body: PauseBody,

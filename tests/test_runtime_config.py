@@ -20,6 +20,8 @@ def test_defaults_six_enabled_btc_off(tmp_path):
     assert rt.asset("ETH").stop_loss_pct == pytest.approx(0.0)
     assert rt.asset("XRP").sides == (Side.UP, Side.DOWN)
     assert rt.asset("XRP").entry_thresh == pytest.approx(0.10)
+    assert rt.asset("ETH").force_exit_s == pytest.approx(240.0)
+    assert rt.asset("ETH").force_exit_deadline_s == pytest.approx(295.0)
 
 
 def test_update_enable_eth_and_persist(tmp_path):
@@ -34,6 +36,8 @@ def test_update_enable_eth_and_persist(tmp_path):
                     "tp_pct": 0.30,
                     "stop_loss_pct": 0.15,
                     "stake_usd": 5.0,
+                    "force_exit_s": 120.0,
+                    "force_exit_deadline_s": 135.0,
                 }
             }
         }
@@ -45,11 +49,52 @@ def test_update_enable_eth_and_persist(tmp_path):
     assert eth.tp_pct == pytest.approx(0.30)
     assert eth.stop_loss_pct == pytest.approx(0.15)
     assert eth.stake_usd == pytest.approx(5.0)
+    assert eth.force_exit_s == pytest.approx(120.0)
+    assert eth.force_exit_deadline_s == pytest.approx(135.0)
 
     reloaded = RuntimeConfig(tmp_path / "runtime_config.json", load_settings().assets)
     assert reloaded.asset("ETH").enabled is True
     assert reloaded.asset("ETH").sides == (Side.UP, Side.DOWN)
+    assert reloaded.asset("ETH").force_exit_s == pytest.approx(120.0)
+    assert reloaded.asset("ETH").force_exit_deadline_s == pytest.approx(135.0)
     assert reloaded.version >= 1
+
+
+def test_mode_default_persisted_and_live_gate(tmp_path):
+    s = load_settings()
+    path = tmp_path / "runtime_config.json"
+    rt = RuntimeConfig(path, s.assets, default_mode="paper",
+                       live_allowed=True)
+    assert rt.mode == "paper"
+    assert rt.set_mode("live") == "live"
+
+    reloaded = RuntimeConfig(path, s.assets, default_mode="paper",
+                             live_allowed=True)
+    assert reloaded.mode == "live"
+
+    # A persisted live mode is ignored when .env does not allow live.
+    blocked = RuntimeConfig(path, s.assets, default_mode="paper",
+                            live_allowed=False)
+    assert blocked.mode == "paper"
+    with pytest.raises(ValueError):
+        blocked.set_mode("live")
+
+
+def test_invalid_force_exit_rejected(tmp_path):
+    rt = _runtime(tmp_path)
+    with pytest.raises(ValueError):
+        rt.update({"assets": {"ETH": {"force_exit_s": 30}}})
+    with pytest.raises(ValueError):
+        rt.update(
+            {
+                "assets": {
+                    "ETH": {
+                        "force_exit_s": 200,
+                        "force_exit_deadline_s": 150,
+                    }
+                }
+            }
+        )
 
 
 def test_partial_update_preserves_other_fields(tmp_path):

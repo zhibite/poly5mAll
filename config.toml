@@ -131,6 +131,16 @@ DATA_DIR = "data"
 LEVEL = "INFO"
 
 # ---------------------------------------------------------------------------
+# Per-asset forced-exit timing is optional.  The [GENERAL] values above are
+# the defaults; add FORCE_EXIT_S / FORCE_EXIT_DEADLINE_S to any [ASSETS.X]
+# table to override them per coin (the web /config page writes the same
+# fields).  If only FORCE_EXIT_S is set, the deadline defaults to
+# min(global deadline, FORCE_EXIT_S + 15s).  Example:
+#   [ASSETS.ETH]
+#   FORCE_EXIT_S = 120
+#   FORCE_EXIT_DEADLINE_S = 135
+#
+# ---------------------------------------------------------------------------
 # Per-asset production parameters (docs/all_5m_strategy1_summary.md §2)
 #
 # SIDES: "UP", "DOWN" or "BOTH" (two independent positions per window).

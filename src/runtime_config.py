@@ -94,6 +94,25 @@ def _validate_values(
             raise ValueError(f"{name}: stop_loss_pct must be in [0, 1)")
         out["stop_loss_pct"] = sl
 
+    try:
+        force = float(raw.get("force_exit_s", base.force_exit_s))
+        deadline = float(
+            raw.get("force_exit_deadline_s", base.force_exit_deadline_s)
+        )
+    except (TypeError, ValueError) as exc:
+        raise ValueError(
+            f"{name}: force_exit_s/force_exit_deadline_s must be numbers"
+        ) from exc
+    if not (60.0 < force < 300.0):
+        raise ValueError(f"{name}: force_exit_s must be in (60, 300)")
+    if not (force <= deadline <= 300.0):
+        raise ValueError(
+            f"{name}: force_exit_deadline_s must be >= force_exit_s "
+            "and <= 300"
+        )
+    out["force_exit_s"] = force
+    out["force_exit_deadline_s"] = deadline
+
     return out
 
 
@@ -102,6 +121,9 @@ class RuntimeConfig:
         self,
         path: str | Path | None,
         base_assets: tuple[AssetConfig, ...],
+        *,
+        default_mode: str = "paper",
+        live_allowed: bool = False,
     ) -> None:
         self.path = Path(path) if path else None
         self.base: dict[str, AssetConfig] = {
@@ -112,6 +134,13 @@ class RuntimeConfig:
         self.version = 0
         self.updated_at = 0.0
         self.last_error = ""
+        self.live_allowed = bool(live_allowed)
+        self._default_mode = (
+            default_mode if default_mode in ("paper", "live") else "paper"
+        )
+        self.mode = self._default_mode
+        if self.mode == "live" and not self.live_allowed:
+            self.mode = "paper"
         self.load()
 
     # ── reads ──────────────────────────────────────────────────────────
@@ -128,6 +157,14 @@ class RuntimeConfig:
             stake_usd=ov.get("stake_usd", base.stake_usd),
             stop_loss_pct=float(
                 ov.get("stop_loss_pct", base.stop_loss_pct)
+            ),
+            force_exit_s=float(
+                ov.get("force_exit_s", base.force_exit_s)
+            ),
+            force_exit_deadline_s=float(
+                ov.get(
+                    "force_exit_deadline_s", base.force_exit_deadline_s
+                )
             ),
         )
 
@@ -147,6 +184,8 @@ class RuntimeConfig:
                     "tp_pct": a.tp_pct,
                     "stake_usd": a.stake_usd,
                     "stop_loss_pct": a.stop_loss_pct,
+                    "force_exit_s": a.force_exit_s,
+                    "force_exit_deadline_s": a.force_exit_deadline_s,
                 }
             )
         return out
@@ -183,15 +222,34 @@ class RuntimeConfig:
         )
         return self.snapshot()
 
+    def set_mode(self, mode: str) -> str:
+        """Switch the runtime trading mode and persist it."""
+        mode = str(mode).strip().lower()
+        if mode not in ("paper", "live"):
+            raise ValueError("mode must be 'paper' or 'live'")
+        if mode == "live" and not self.live_allowed:
+            raise ValueError("live mode is not enabled in .env")
+        self.mode = mode
+        self.version += 1
+        self.updated_at = time.time()
+        self._save()
+        log.info("runtime_config.mode={} version={}", mode, self.version)
+        return self.mode
+
     def reset(self) -> list[dict[str, Any]]:
         self.overrides = {}
         self.version += 1
         self.updated_at = time.time()
         if self.path is not None:
-            try:
-                self.path.unlink(missing_ok=True)
-            except OSError as exc:
-                log.warning("runtime_config.reset_failed error={}", exc)
+            if self.mode != self._default_mode:
+                # Keep a non-default paper/live selection across a reset of
+                # the asset overrides.
+                self._save()
+            else:
+                try:
+                    self.path.unlink(missing_ok=True)
+                except OSError as exc:
+                    log.warning("runtime_config.reset_failed error={}", exc)
         log.info("runtime_config.reset version={}", self.version)
         return self.snapshot()
 
@@ -209,6 +267,11 @@ class RuntimeConfig:
 
         self.version = int(raw.get("version", 0) or 0)
         self.updated_at = float(raw.get("updated_at", 0.0) or 0.0)
+        mode = str(raw.get("mode") or "").strip().lower()
+        if mode == "paper":
+            self.mode = "paper"
+        elif mode == "live" and self.live_allowed:
+            self.mode = "live"
         assets_raw = raw.get("assets") or {}
         if not isinstance(assets_raw, dict):
             return
@@ -243,6 +306,7 @@ class RuntimeConfig:
         payload = {
             "version": max(1, self.version),
             "updated_at": self.updated_at or time.time(),
+            "mode": self.mode,
             "assets": {
                 row["asset"]: {
                     "enabled": row["enabled"],
@@ -251,6 +315,8 @@ class RuntimeConfig:
                     "tp_pct": row["tp_pct"],
                     "stake_usd": row["stake_usd"],
                     "stop_loss_pct": row["stop_loss_pct"],
+                    "force_exit_s": row["force_exit_s"],
+                    "force_exit_deadline_s": row["force_exit_deadline_s"],
                 }
                 for row in self.snapshot()
             },

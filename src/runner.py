@@ -108,6 +108,15 @@ class AssetRunner:
                 pass
         return self.cfg
 
+    @property
+    def mode(self) -> str:
+        """Active execution mode (paper/live) from the broker."""
+        return getattr(self.broker, "mode", "paper")
+
+    @property
+    def is_live(self) -> bool:
+        return self.mode == "live"
+
     # ── lifecycle ──────────────────────────────────────────────────────
     async def tick(self, now: float | None = None) -> None:
         now_f = time.time() if now is None else float(now)
@@ -242,7 +251,7 @@ class AssetRunner:
             window.tick_size,
             "+".join(s.plan.side.value for s in self.sides) or "-",
         )
-        if self.settings.live:
+        if self.is_live:
             known = {
                 s.position.token_id
                 for s in self.sides
@@ -326,7 +335,7 @@ class AssetRunner:
                 self.asset,
                 side.plan.side.value,
                 pos.position_id,
-                self.settings.general.force_exit_deadline_s,
+                side.plan.force_exit_deadline_s,
             )
             self._on_state_change()
 
@@ -449,7 +458,7 @@ class AssetRunner:
         remaining = pos.remaining_shares
         if remaining < SIZE_PRECISION - 1e-9:
             # Below one size lot: worth <1 cent, write it off and close.
-            record = side.on_dust(now, reason, self.settings.mode)
+            record = side.on_dust(now, reason, self.mode)
             log.warning(
                 "[{}] {} {} dust {:.6f} written off (reason={})",
                 self.asset,
@@ -524,7 +533,7 @@ class AssetRunner:
             limit = self._force_exit_limit(quote, tick)
 
         if (
-            self.settings.live
+            self.is_live
             and remaining * limit < MIN_ORDER_USD - 1e-9
         ):
             # Live market SELLs must clear both the 5-share and $1 floors.
@@ -560,7 +569,7 @@ class AssetRunner:
             return
 
         record = side.on_exit_fill(
-            fill, now, reason, self.settings.execution, self.settings.mode
+            fill, now, reason, self.settings.execution, self.mode
         )
         log.info(
             "[{}] EXIT {} {} reason={} mode={} tp_target={:.4f} "
@@ -652,7 +661,7 @@ class AssetRunner:
             pos = side.position
             remaining = pos.remaining_shares
             if remaining < SIZE_PRECISION - 1e-9:
-                record = side.on_dust(now, "shutdown", self.settings.mode)
+                record = side.on_dust(now, "shutdown", self.mode)
                 log.warning(
                     "[{}] {} dust {:.6f} written off (shutdown)",
                     self.asset,
@@ -680,7 +689,7 @@ class AssetRunner:
             if fresh is not None:
                 tick = fresh
             if (
-                self.settings.live
+                self.is_live
                 and remaining * tick < MIN_ORDER_USD - 1e-9
             ):
                 side.on_dust_pending(now, "shutdown")
@@ -715,7 +724,7 @@ class AssetRunner:
                 now,
                 "shutdown",
                 self.settings.execution,
-                self.settings.mode,
+                self.mode,
             )
             log.info(
                 "[{}] FLATTEN {} shares={:.4f} px={:.4f}",
@@ -811,7 +820,13 @@ class AssetRunner:
                 "start_ts": window.start_ts,
                 "end_ts": window.end_ts,
                 "phase": (
-                    phase_for(now, window, self.settings).value
+                    phase_for(
+                        now,
+                        window,
+                        self.settings,
+                        force_exit_s=cfg.force_exit_s,
+                        force_exit_deadline_s=cfg.force_exit_deadline_s,
+                    ).value
                     if window is not None
                     else None
                 ),
@@ -828,21 +843,36 @@ class AssetRunner:
                 "stop_loss_pct": cfg.stop_loss_pct,
                 "stake_usd": cfg.stake_usd
                 or self.settings.execution.stake_usd,
+                "force_exit_s": cfg.force_exit_s,
+                "force_exit_deadline_s": cfg.force_exit_deadline_s,
             },
             "last_error": self.last_error,
         }
 
 
-def phase_for(now: float, window: MarketWindow, settings: Settings) -> Phase:
+def phase_for(
+    now: float,
+    window: MarketWindow,
+    settings: Settings,
+    *,
+    force_exit_s: float | None = None,
+    force_exit_deadline_s: float | None = None,
+) -> Phase:
     t = window.seconds_since(now)
     g = settings.general
+    force = g.force_exit_s if force_exit_s is None else float(force_exit_s)
+    deadline = (
+        g.force_exit_deadline_s
+        if force_exit_deadline_s is None
+        else float(force_exit_deadline_s)
+    )
     if t < 0:
         return Phase.PRE
     if t <= g.entry_window_end_s:
         return Phase.ENTRY
-    if t < g.force_exit_s:
+    if t < force:
         return Phase.TP
-    if t <= g.force_exit_deadline_s:
+    if t <= deadline:
         return Phase.FORCE_EXIT
     return Phase.ENDED
 
@@ -973,6 +1003,52 @@ class MultiAssetRunner:
             else:
                 self._entry_reservations.pop(key, None)
 
+    # ── runtime paper/live mode ────────────────────────────────────────
+    @property
+    def mode(self) -> str:
+        return getattr(self.broker, "mode", "paper")
+
+    @property
+    def is_live(self) -> bool:
+        return self.mode == "live"
+
+    @property
+    def live_available(self) -> bool:
+        return bool(getattr(self.broker, "live_available", False))
+
+    @property
+    def live_allowed(self) -> bool:
+        return bool(self.settings.live)
+
+    def mode_switch_block_reason(self) -> str:
+        """Why the paper/live switch is not allowed right now ("" = ok)."""
+        if self.all_positions():
+            return "open positions"
+        if any(self._entry_reservations.values()):
+            return "entry in flight"
+        for runner in self.assets.values():
+            for side in runner.all_sides():
+                if side.status is SideStatus.ENTERING:
+                    return "entry in flight"
+        return ""
+
+    def set_mode(self, mode: str) -> str:
+        mode = str(mode).strip().lower()
+        if mode not in ("paper", "live"):
+            raise ValueError("mode must be 'paper' or 'live'")
+        reason = self.mode_switch_block_reason()
+        if reason:
+            raise ValueError(f"cannot switch mode: {reason}")
+        if mode == "live" and not self.live_allowed:
+            raise ValueError("live mode is not enabled in .env")
+        if mode == "live" and not self.live_available:
+            raise ValueError("live broker is not configured")
+        self.broker.set_mode(mode)
+        if self.runtime is not None:
+            self.runtime.set_mode(mode)
+        log.warning("runtime mode switched to {}", mode)
+        return mode
+
     def enabled_assets(self) -> set[str]:
         out: set[str] = set()
         for name in self.assets:
@@ -1100,8 +1176,9 @@ class MultiAssetRunner:
                 )
             )
         log.info(
-            "runner.started mode={} assets={}",
-            self.settings.mode,
+            "runner.started mode={} live_available={} assets={}",
+            self.mode,
+            self.live_available,
             ",".join(self.assets),
         )
 
@@ -1149,7 +1226,7 @@ class MultiAssetRunner:
             if pos.window_end > now:
                 # Live: the wallet balance is the source of truth.  Paper:
                 # re-register the holding in the paper ledger.
-                if self.settings.live:
+                if self.is_live:
                     balance = await self.broker.token_balance(pos.token_id)
                     if balance is None:
                         log.warning(
@@ -1166,8 +1243,12 @@ class MultiAssetRunner:
                         continue
                     else:
                         pos.shares = pos.sold_shares + balance
-                elif isinstance(self.broker, PaperBroker):
-                    self.broker.adopt(pos.token_id, pos.remaining_shares)
+                else:
+                    paper = getattr(self.broker, "paper", None)
+                    if paper is None and isinstance(self.broker, PaperBroker):
+                        paper = self.broker
+                    if paper is not None:
+                        paper.adopt(pos.token_id, pos.remaining_shares)
                 runner.pending_positions.append(pos)
             else:
                 self._stale.append(pos)
@@ -1375,12 +1456,15 @@ class MultiAssetRunner:
             )
             if runtime is not None:
                 record = runtime.on_settled(
-                    payout, now, self.settings.mode, note="gamma resolution"
+                    payout, now, self.mode, note="gamma resolution"
                 )
             else:
-                record = _settle_orphan(pos, payout, now, self.settings.mode)
-            if isinstance(self.broker, PaperBroker):
-                self.broker.holdings[pos.token_id] = 0.0
+                record = _settle_orphan(pos, payout, now, self.mode)
+            paper = getattr(self.broker, "paper", None)
+            if paper is None and isinstance(self.broker, PaperBroker):
+                paper = self.broker
+            if paper is not None:
+                paper.holdings[pos.token_id] = 0.0
             if record is not None:
                 self._on_trade(record)
             log.info(
@@ -1434,7 +1518,9 @@ class MultiAssetRunner:
         return {
             "ts": now_f,
             "iso": utc_iso(now_f),
-            "mode": self.settings.mode,
+            "mode": self.mode,
+            "live_available": self.live_available,
+            "live_allowed": self.live_allowed,
             "uptime_s": round(now_f - self._started_at, 1),
             "config_version": self.runtime.version,
             "max_same_side_positions": self.settings.execution.max_same_side_positions,

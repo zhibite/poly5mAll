@@ -38,7 +38,7 @@ from src.config import (
     load_settings,
 )
 from src.economics import fee_table
-from src.execution.broker import LiveBroker, PaperBroker
+from src.execution.broker import LiveBroker, ModeBroker, PaperBroker
 from src.execution.clob_client import CLOBClient
 from src.infra.logging import configure_logging, get_logger
 from src.infra.timeutil import utc_hms
@@ -181,28 +181,9 @@ async def _probe(settings: Settings) -> int:
     return 0
 
 
-async def _build_broker(settings: Settings, pm, cache: PriceCache):
+async def _build_broker(settings: Settings, pm, cache: PriceCache, runtime):
     e = settings.execution
-    if settings.live:
-        c = settings.credentials
-        clob = CLOBClient(
-            host=c.polymarket_host,
-            private_key=c.wallet_private_key,
-            api_key=c.api_key,
-            api_secret=c.api_secret,
-            api_passphrase=c.api_passphrase,
-            signature_type=c.signature_type,
-            funder_address=c.funder_address,
-            fee_rate=e.taker_fee_rate,
-            include_fees=e.include_fees,
-        )
-        return LiveBroker(
-            clob,
-            pm,
-            require_two_sided_book=e.require_two_sided_book,
-            min_entry_bid_depth_usd=e.min_entry_bid_depth_usd,
-        )
-    return PaperBroker(
+    paper = PaperBroker(
         pm,
         cache,
         fee_rate=e.taker_fee_rate,
@@ -210,6 +191,40 @@ async def _build_broker(settings: Settings, pm, cache: PriceCache):
         require_two_sided_book=e.require_two_sided_book,
         min_entry_bid_depth_usd=e.min_entry_bid_depth_usd,
     )
+    live = None
+    # Build the live broker whenever the environment allows live trading,
+    # so the config page can switch to it at runtime.  If credentials or
+    # the L1 auth fail, the bot still runs in paper.
+    if settings.live:
+        try:
+            c = settings.credentials
+            clob = CLOBClient(
+                host=c.polymarket_host,
+                private_key=c.wallet_private_key,
+                api_key=c.api_key,
+                api_secret=c.api_secret,
+                api_passphrase=c.api_passphrase,
+                signature_type=c.signature_type,
+                funder_address=c.funder_address,
+                fee_rate=e.taker_fee_rate,
+                include_fees=e.include_fees,
+            )
+            live = LiveBroker(
+                clob,
+                pm,
+                require_two_sided_book=e.require_two_sided_book,
+                min_entry_bid_depth_usd=e.min_entry_bid_depth_usd,
+            )
+        except Exception as exc:  # noqa: BLE001
+            log.warning("live broker unavailable: {}", exc)
+    if runtime.mode == "live" and live is None:
+        log.warning(
+            "runtime mode=live but live broker is unavailable; "
+            "falling back to paper"
+        )
+        runtime.set_mode("paper")
+    mode = runtime.mode if (runtime.mode == "paper" or live is not None) else "paper"
+    return ModeBroker(paper, live, mode=mode)
 
 
 async def _run(settings: Settings, duration_s: float = 0.0) -> int:
@@ -224,10 +239,16 @@ async def _run(settings: Settings, duration_s: float = 0.0) -> int:
         window_sec=settings.general.window_sec,
         pre_discovery_lead_s=settings.feed.pre_discovery_lead_s,
     )
-    broker = await _build_broker(settings, pm, cache)
-    if isinstance(broker, LiveBroker):
+    runtime = RuntimeConfig(
+        settings.data_dir / "runtime_config.json",
+        settings.assets,
+        default_mode=settings.mode,
+        live_allowed=settings.live,
+    )
+    broker = await _build_broker(settings, pm, cache, runtime)
+    if broker.is_live and broker.live is not None:
         try:
-            balance = await broker.collateral()
+            balance = await broker.live.collateral()
         except Exception:  # noqa: BLE001
             balance = None
         if balance is None:
@@ -245,9 +266,6 @@ async def _run(settings: Settings, duration_s: float = 0.0) -> int:
         MarketWSManager(cache, shards=settings.feed.ws_shards)
         if settings.feed.use_ws
         else None
-    )
-    runtime = RuntimeConfig(
-        settings.data_dir / "runtime_config.json", settings.assets
     )
     runner = MultiAssetRunner(
         settings,
@@ -288,9 +306,9 @@ async def _run(settings: Settings, duration_s: float = 0.0) -> int:
         if web is not None:
             await web.start()
         log.warning(
-            "mode={} live={} assets={} web={} — press Ctrl+C to stop",
-            settings.mode,
-            settings.live,
+            "mode={} live_available={} assets={} web={} — press Ctrl+C to stop",
+            broker.mode,
+            broker.live_available,
             ",".join(runner.assets),
             web.url if web is not None else "off",
         )
@@ -340,7 +358,8 @@ def main(argv: list[str] | None = None) -> int:
 
     if settings.live:
         log.warning(
-            "LIVE MODE: real CLOB orders, stake={}U per trade, fee_rates={}",
+            "LIVE ENABLED: real CLOB orders allowed, stake={}U per trade, "
+            "fee_rates={}; active mode comes from the runtime config",
             settings.execution.stake_usd,
             ",".join(
                 f"{a.asset}:{a.taker_fee_rate:g}" for a in settings.assets

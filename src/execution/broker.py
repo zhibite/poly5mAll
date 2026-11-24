@@ -414,3 +414,95 @@ class LiveBroker:
     async def collateral(self) -> float | None:
         """USDC (pUSD) balance, for a startup sanity check."""
         return await self._clob.get_collateral()
+
+
+# ---------------------------------------------------------------------------
+# Runtime paper/live switch
+# ---------------------------------------------------------------------------
+
+
+class ModeBroker:
+    """Delegates fills to the paper or live broker at runtime.
+
+    The live broker is built once at startup (when the environment allows
+    live trading and credentials are present); ``mode`` selects which one
+    receives new orders.  Switching is refused while positions are open or
+    an entry is in flight by the runner, and switching to paper clears the
+    paper ledger.
+    """
+
+    def __init__(self, paper: PaperBroker, live: LiveBroker | None = None,
+                 mode: str = "paper") -> None:
+        self.paper = paper
+        self.live = live
+        self.mode = mode if mode in ("paper", "live") else "paper"
+        if self.mode == "live" and self.live is None:
+            self.mode = "paper"
+
+    @property
+    def is_live(self) -> bool:
+        return self.mode == "live" and self.live is not None
+
+    @property
+    def live_available(self) -> bool:
+        return self.live is not None
+
+    def set_mode(self, mode: str) -> str:
+        mode = str(mode).strip().lower()
+        if mode not in ("paper", "live"):
+            raise ValueError("mode must be 'paper' or 'live'")
+        if mode == "live" and self.live is None:
+            raise RuntimeError("live broker is not configured")
+        if mode == "paper":
+            self.paper.holdings.clear()
+        self.mode = mode
+        return self.mode
+
+    def _active(self):
+        return self.live if self.is_live else self.paper
+
+    async def buy(
+        self,
+        token_id: str,
+        usd_amount: float,
+        limit_price: float,
+        tick_size: float,
+        fee_rate: float | None = None,
+        *,
+        position_id: str = "",
+    ) -> Fill | None:
+        return await self._active().buy(
+            token_id,
+            usd_amount,
+            limit_price,
+            tick_size,
+            fee_rate=fee_rate,
+            position_id=position_id,
+        )
+
+    async def sell(
+        self,
+        token_id: str,
+        shares: float,
+        limit_price: float,
+        tick_size: float,
+        fee_rate: float | None = None,
+        *,
+        position_id: str = "",
+    ) -> Fill | None:
+        return await self._active().sell(
+            token_id,
+            shares,
+            limit_price,
+            tick_size,
+            fee_rate=fee_rate,
+            position_id=position_id,
+        )
+
+    async def token_balance(self, token_id: str) -> float | None:
+        return await self._active().token_balance(token_id)
+
+    async def collateral(self) -> float | None:
+        if self.live is None:
+            return None
+        return await self.live.collateral()

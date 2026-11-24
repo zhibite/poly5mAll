@@ -47,9 +47,23 @@ _BODY = r"""
 
 <div id="auth-alert"></div>
 
+<div class="section">
+  <h2>交易模式</h2>
+  <div class="controls" style="margin:0">
+    <span>当前：<b id="trade-mode">--</b></span>
+    <span class="control-meta" id="mode-note"></span>
+    <button id="mode-switch" class="btn btn-danger">切换到实盘</button>
+  </div>
+  <div class="alert info" style="margin:12px 0 0">
+    切换实盘会下真实订单：要求 .env 允许实盘（<span class="mono">PAPER_TRADING=false</span>
+    且 <span class="mono">LIVE_ENABLED=true</span>）、凭证可用，并且当前
+    <b>无持仓、无在途入场</b>。切换会持久化到运行时配置；纸盘模式不会下真实订单。
+  </div>
+</div>
+
 <div class="alert info">
-  <b>生效时机：</b>启用/关闭 <b>立即</b> 阻止/允许新开仓；方向、entry、TP、每笔仓位在
-  <b>下一个 5m 窗口</b> 生效。已有仓位始终按原参数止盈/240s 强平。
+  <b>生效时机：</b>启用/关闭 <b>立即</b> 阻止/允许新开仓；方向、entry、TP、每笔仓位、
+  强平时间在 <b>下一个 5m 窗口</b> 生效。已有仓位始终按原参数止盈/强平。
   密钥、端口、`TP_EXECUTION_MODE`、流动性过滤和同向上限不在本页，
   需改 <span class="mono">.env</span> / <span class="mono">config.toml</span>；
   费率（官方费率，只读）见下表。
@@ -64,7 +78,8 @@ _BODY = r"""
   <div class="alert info" style="margin:14px 0 0">
     止盈公式：<span class="mono">target = 实际成交价 × (1 + TP%)</span>。
     默认 <span class="mono">observed</span>：触发后 FAK 卖出，成交价取当时最优
-    bid。价格止损已移除，只保留 240s 时间强平。
+    bid。价格止损已移除，只保留时间强平；时间轴为全局默认，
+    <b>下表每个币的强平开始/截止可单独覆盖</b>。
   </div>
 </div>
 
@@ -77,8 +92,9 @@ _BODY = r"""
         <th class="num">费率</th>
         <th class="num">entry ≤</th><th class="num">TP %</th>
         <th class="num">每笔 U</th>
+        <th class="num">强平 s</th><th class="num">截止 s</th>
       </tr></thead>
-      <tbody id="rows"><tr><td colspan="7" class="no-data">加载中...</td></tr></tbody>
+      <tbody id="rows"><tr><td colspan="9" class="no-data">加载中...</td></tr></tbody>
     </table>
   </div>
 </div>
@@ -98,6 +114,36 @@ function sideValue(a) {
   const sides = (a.sides || []).map((s) => String(s).toUpperCase());
   if (sides.includes('UP') && sides.includes('DOWN')) return 'BOTH';
   return sides[0] || 'DOWN';
+}
+
+function renderMode(cfg) {
+  const live = cfg.mode === 'live';
+  $('trade-mode').textContent = live ? '实盘' : '纸盘';
+  $('trade-mode').className = live ? 'red' : 'green';
+  const btn = $('mode-switch');
+  const allowed = !!cfg.live_allowed;
+  const avail = !!cfg.live_available;
+  if (live) {
+    btn.textContent = '切换回纸盘';
+    btn.className = 'btn btn-ghost';
+    btn.disabled = false;
+    $('mode-note').textContent = '真实 CLOB 订单';
+  } else if (!allowed) {
+    btn.textContent = '实盘不可用（.env 未允许）';
+    btn.className = 'btn btn-ghost';
+    btn.disabled = true;
+    $('mode-note').textContent = '需要 PAPER_TRADING=false 且 LIVE_ENABLED=true';
+  } else if (!avail) {
+    btn.textContent = '实盘不可用（凭证未配置）';
+    btn.className = 'btn btn-ghost';
+    btn.disabled = true;
+    $('mode-note').textContent = 'CLOB 凭证缺失或初始化失败';
+  } else {
+    btn.textContent = '切换到实盘';
+    btn.className = 'btn btn-danger';
+    btn.disabled = false;
+    $('mode-note').textContent = '切换前必须无持仓、无在途入场';
+  }
 }
 
 function renderTiming(cfg) {
@@ -140,8 +186,8 @@ function renderTiming(cfg) {
     <div class="timing-card sl">
       <div class="t-label">时间止损 / 强平</div>
       <div class="t-time">${force}–${deadline}s</div>
-      <div class="t-desc">到 ${force}s 仍未止盈，FAK 市价卖出并每秒重试；
-        这是时间强平。</div>
+      <div class="t-desc">到该币的强平时间仍未止盈，FAK 市价卖出并每秒重试；
+        下表可按币覆盖开始/截止秒数。</div>
     </div>
     <div class="timing-card settle">
       <div class="t-label">结算</div>
@@ -166,6 +212,7 @@ function render() {
   $('enabled-count').textContent = enabled + ' / ' + (cfg.assets || []).length;
   $('entries').textContent = cfg.paused ? '已暂停' : '允许';
   $('entries').className = 'stat-value ' + (cfg.paused ? 'red' : 'green');
+  renderMode(cfg);
   renderTiming(cfg);
 
   if (cfg.web && !cfg.web.auth) {
@@ -202,8 +249,14 @@ function render() {
       <td class="num"><input type="number" data-k="stake_usd" step="1"
           min="1" style="width:90px" value="${stake}"
           placeholder="${cfg.stake_usd}"></td>
+      <td class="num"><input type="number" data-k="force_exit_s" step="1"
+          min="61" max="299" style="width:78px"
+          value="${a.force_exit_s ?? 240}"></td>
+      <td class="num"><input type="number" data-k="force_exit_deadline_s"
+          step="1" min="61" max="300" style="width:78px"
+          value="${a.force_exit_deadline_s ?? 295}"></td>
     </tr>`;
-  }).join('') || '<tr><td colspan="7" class="no-data">没有资产</td></tr>';
+  }).join('') || '<tr><td colspan="9" class="no-data">没有资产</td></tr>';
 
   for (const cb of document.querySelectorAll('#rows input[data-k="enabled"]')) {
     cb.addEventListener('change', () => {
@@ -211,6 +264,18 @@ function render() {
       if (!state) return;
       state.textContent = cb.checked ? '启用' : '关闭';
       state.className = 'pill ' + (cb.checked ? 'green' : '');
+    });
+  }
+  // When the forced-exit time changes, pull the deadline along unless the
+  // operator already set a later one.
+  for (const inp of document.querySelectorAll('#rows input[data-k="force_exit_s"]')) {
+    inp.addEventListener('change', () => {
+      const tr = inp.closest('tr');
+      const dl = tr.querySelector('[data-k="force_exit_deadline_s"]');
+      const force = Number(inp.value);
+      if (dl && (!dl.value || Number(dl.value) <= force)) {
+        dl.value = String(Math.min(300, force + 15));
+      }
     });
   }
 }
@@ -226,6 +291,8 @@ function collect() {
     const tpPct = Number(get('tp_pct').value);
     const stakeRaw = get('stake_usd').value;
     const stake = stakeRaw === '' ? null : Number(stakeRaw);
+    const forceExit = Number(get('force_exit_s').value);
+    const forceDeadline = Number(get('force_exit_deadline_s').value);
 
     if (!(entry > 0 && entry < 1)) {
       throw new Error(`${asset}: entry 必须在 (0, 1) 之间`);
@@ -237,6 +304,12 @@ function collect() {
     if (stake !== null && !(stake > 0)) {
       throw new Error(`${asset}: 每笔 U 必须 > 0 或留空`);
     }
+    if (!(forceExit > 60 && forceExit < 300)) {
+      throw new Error(`${asset}: 强平时间必须在 (60, 300) 秒之间`);
+    }
+    if (!(forceDeadline >= forceExit && forceDeadline <= 300)) {
+      throw new Error(`${asset}: 强平截止必须 >= 强平开始且 <= 300 秒`);
+    }
     assets[asset] = {
       enabled,
       sides,
@@ -244,10 +317,34 @@ function collect() {
       tp_pct: tpPct / 100,
       stop_loss_pct: 0.0,
       stake_usd: stake,
+      force_exit_s: forceExit,
+      force_exit_deadline_s: forceDeadline,
     };
   }
   return {assets};
 }
+
+$('mode-switch').onclick = async () => {
+  const cur = DATA && DATA.mode;
+  let body;
+  if (cur === 'live') {
+    if (!confirm('切换回纸盘模式？要求当前无持仓、无在途入场。')) return;
+    body = {mode: 'paper', confirm: 'PAPER'};
+  } else {
+    const c = prompt('切换到实盘会下真实订单。输入 LIVE 确认：');
+    if (c !== 'LIVE') return;
+    body = {mode: 'live', confirm: 'LIVE'};
+  }
+  try {
+    await postJSON('/api/mode', body);
+    await load();
+    $('msg').textContent = '✅ 已切换到' + (body.mode === 'live' ? '实盘' : '纸盘');
+    $('msg').className = 'msg green';
+  } catch (e) {
+    $('msg').textContent = '⚠️ ' + e.message;
+    $('msg').className = 'msg red';
+  }
+};
 
 async function load() {
   try {

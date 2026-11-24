@@ -53,9 +53,9 @@ class SideRuntime:
             return Phase.PRE
         if t <= general.entry_window_end_s:
             return Phase.ENTRY
-        if t < general.force_exit_s:
+        if t < self.plan.force_exit_s:
             return Phase.TP
-        if t <= general.force_exit_deadline_s:
+        if t <= self.plan.force_exit_deadline_s:
             return Phase.FORCE_EXIT
         return Phase.ENDED
 
@@ -129,16 +129,17 @@ class SideRuntime:
         if self.status is not SideStatus.HOLDING or self.position is None:
             return False
         t = self.window.seconds_since(now)
-        if t < general.force_exit_s:
+        if t < self.plan.force_exit_s:
             return False
-        if t > general.force_exit_deadline_s:
+        if t > self.plan.force_exit_deadline_s:
             return False
         return now - self.last_exit_attempt >= execution.exit_retry_s
 
     def deadline_passed(self, now: float, general: GeneralConfig) -> bool:
         return (
             self.status is SideStatus.HOLDING
-            and self.window.seconds_since(now) > general.force_exit_deadline_s
+            and self.window.seconds_since(now)
+            > self.plan.force_exit_deadline_s
         )
 
     # ── bookings ───────────────────────────────────────────────────────

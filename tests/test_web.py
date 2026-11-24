@@ -14,6 +14,10 @@ from src.web.app import create_app
 
 
 class FakeRunner:
+    mode = "paper"
+    live_available = True
+    live_allowed = True
+
     def __init__(self) -> None:
         self.paused = False
         self.pause_reason = ""
@@ -23,7 +27,7 @@ class FakeRunner:
         return {
             "ts": time.time(),
             "iso": "",
-            "mode": "paper",
+            "mode": self.mode,
             "uptime_s": 12.5,
             "config_version": 1,
             "paused": self.paused,
@@ -38,6 +42,12 @@ class FakeRunner:
     def set_pause(self, paused: bool, reason: str = "") -> None:
         self.paused = bool(paused)
         self.pause_reason = (reason or "paused") if self.paused else ""
+
+    def set_mode(self, mode: str) -> str:
+        if mode not in ("paper", "live"):
+            raise ValueError("mode must be paper or live")
+        self.mode = mode
+        return mode
 
     async def flatten_open_positions(self) -> int:
         return 0
@@ -142,6 +152,8 @@ def test_config_defaults_and_update(client):
                     "tp_pct": 0.3,
                     "stop_loss_pct": 0.15,
                     "stake_usd": 5,
+                    "force_exit_s": 120,
+                    "force_exit_deadline_s": 135,
                 }
             }
         },
@@ -153,12 +165,28 @@ def test_config_defaults_and_update(client):
     assert by_name["ETH"]["entry_thresh"] == pytest.approx(0.2)
     assert by_name["ETH"]["stop_loss_pct"] == pytest.approx(0.15)
     assert by_name["ETH"]["stake_usd"] == pytest.approx(5.0)
+    assert by_name["ETH"]["force_exit_s"] == pytest.approx(120.0)
+    assert by_name["ETH"]["force_exit_deadline_s"] == pytest.approx(135.0)
 
     r = client.post("/api/config/reset")
     assert r.status_code == 200
     by_name = {a["asset"]: a for a in r.json()["assets"]}
     assert by_name["ETH"]["enabled"] is True
     assert by_name["BTC"]["enabled"] is False
+
+
+def test_mode_switch_requires_live_confirmation(client):
+    r = client.post("/api/mode", json={"mode": "live"})
+    assert r.status_code == 400
+
+    r = client.post("/api/mode", json={"mode": "live", "confirm": "LIVE"})
+    assert r.status_code == 200, r.text
+    assert r.json()["mode"] == "live"
+    assert client.get("/api/config").json()["mode"] == "live"
+
+    r = client.post("/api/mode", json={"mode": "paper"})
+    assert r.status_code == 200, r.text
+    assert r.json()["mode"] == "paper"
 
 
 def test_trades_stats_and_filters(client):

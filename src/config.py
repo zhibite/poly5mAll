@@ -248,6 +248,12 @@ class AssetConfig:
     tp_pct: float
     stake_usd: float | None = None
     stop_loss_pct: float = 0.20
+    # Per-asset forced-exit timing (seconds into the 5m window).  Defaults
+    # to [GENERAL] FORCE_EXIT_S / FORCE_EXIT_DEADLINE_S; the web config
+    # page can override it per coin.  When only FORCE_EXIT_S is set the
+    # deadline defaults to min(global deadline, force + 15s).
+    force_exit_s: float = 240.0
+    force_exit_deadline_s: float = 295.0
     # Official taker fee rate for this asset's 5m market (BTC = 0.05,
     # everything else = 0.01).  Resolved from [ASSETS.<NAME>] TAKER_FEE_RATE,
     # falling back to [EXECUTION] TAKER_FEE_RATE.
@@ -263,6 +269,8 @@ class AssetConfig:
                 tp_pct=float(self.tp_pct),
                 stake_usd=stake,
                 stop_loss_pct=float(self.stop_loss_pct),
+                force_exit_s=float(self.force_exit_s),
+                force_exit_deadline_s=float(self.force_exit_deadline_s),
                 taker_fee_rate=float(self.taker_fee_rate),
             )
             for side in self.sides
@@ -525,7 +533,7 @@ def load_settings(config_path: str | Path | None = None) -> Settings:
         "LOG_LEVEL", str(_get(log_raw, "LEVEL", "INFO"))
     ).upper()
 
-    assets = _load_assets(raw, execution)
+    assets = _load_assets(raw, execution, general)
     credentials = _load_credentials()
 
     settings = Settings(
@@ -544,7 +552,9 @@ def load_settings(config_path: str | Path | None = None) -> Settings:
 
 
 def _load_assets(
-    raw: dict[str, Any], execution: ExecutionConfig
+    raw: dict[str, Any],
+    execution: ExecutionConfig,
+    general: GeneralConfig,
 ) -> list[AssetConfig]:
     assets_raw = _section(raw, "ASSETS")
     names = [str(k).upper() for k in assets_raw.keys()]
@@ -617,6 +627,28 @@ def _load_assets(
             f"{name}_STOP_LOSS_PCT",
             _as_float(_get(table, "STOP_LOSS_PCT", sl_default), sl_default),
         )
+        # Optional per-asset forced-exit timing.  The global [GENERAL]
+        # values are the default; a per-asset FORCE_EXIT_S without an
+        # explicit deadline gets a short retry window instead of
+        # inheriting the global 295 s.
+        force = general.force_exit_s
+        force_raw = _get(table, "FORCE_EXIT_S", None)
+        force_env = _env(f"{name}_FORCE_EXIT_S")
+        if force_env or force_raw is not None:
+            force = _env_float(
+                f"{name}_FORCE_EXIT_S",
+                _as_float(force_raw, general.force_exit_s),
+            )
+        deadline = general.force_exit_deadline_s
+        deadline_raw = _get(table, "FORCE_EXIT_DEADLINE_S", None)
+        deadline_env = _env(f"{name}_FORCE_EXIT_DEADLINE_S")
+        if deadline_env or deadline_raw is not None:
+            deadline = _env_float(
+                f"{name}_FORCE_EXIT_DEADLINE_S",
+                _as_float(deadline_raw, general.force_exit_deadline_s),
+            )
+        elif force != general.force_exit_s:
+            deadline = min(general.force_exit_deadline_s, force + 15.0)
         out.append(
             AssetConfig(
                 asset=name,
@@ -626,6 +658,8 @@ def _load_assets(
                 tp_pct=tp,
                 stake_usd=stake,
                 stop_loss_pct=sl,
+                force_exit_s=force,
+                force_exit_deadline_s=deadline,
                 taker_fee_rate=fee,
             )
         )
@@ -797,6 +831,16 @@ def validate_settings(settings: Settings) -> None:
             raise ConfigError(f"{asset.asset}: STAKE_USD must be > 0")
         if not (0.0 <= asset.stop_loss_pct < 1.0):
             raise ConfigError(f"{asset.asset}: STOP_LOSS_PCT must be in [0, 1)")
+        if not (
+            g.tp_window_start_s
+            < asset.force_exit_s
+            <= asset.force_exit_deadline_s
+            < g.window_sec
+        ):
+            raise ConfigError(
+                f"{asset.asset}: need TP_WINDOW_START_S < FORCE_EXIT_S "
+                "<= FORCE_EXIT_DEADLINE_S < WINDOW_SEC"
+            )
         if not (0.0 <= asset.taker_fee_rate < 1.0):
             raise ConfigError(
                 f"{asset.asset}: TAKER_FEE_RATE must be in [0, 1)"
@@ -841,6 +885,7 @@ def describe(settings: Settings) -> str:
         lines.append(
             f"  {asset.asset:5} {sides:9} entry<={asset.entry_thresh:.2f}  "
             f"tp={asset.tp_pct*100:.0f}%  fee={asset.taker_fee_rate:g}  "
-            f"stake={stake:g}U{flag}"
+            f"stake={stake:g}U  force={asset.force_exit_s:g}-"
+            f"{asset.force_exit_deadline_s:g}s{flag}"
         )
     return "\n".join(lines)

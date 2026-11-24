@@ -1,11 +1,14 @@
 from __future__ import annotations
 
+import dataclasses
+
 import pytest
 
 from src.config import ExecutionConfig, FeedConfig, GeneralConfig
 from src.models import (
     Fill,
     MarketWindow,
+    Phase,
     Quote,
     Side,
     SidePlan,
@@ -44,6 +47,19 @@ def _quote(now: float, mid: float, bid: float = 0.0, ask: float = 0.0) -> Quote:
         updated_at=now,
         source="ws_bba" if bid and ask else "rest_mid",
     )
+
+
+def test_per_asset_force_exit_time_controls_phase():
+    plan = dataclasses.replace(
+        _plan(), force_exit_s=120.0, force_exit_deadline_s=135.0
+    )
+    side = SideRuntime(plan, _window())
+    g = GeneralConfig()
+
+    assert side.phase(T0 + 100, g) is Phase.TP
+    assert side.phase(T0 + 125, g) is Phase.FORCE_EXIT
+    assert side.phase(T0 + 140, g) is Phase.ENDED
+    assert side.deadline_passed(T0 + 140, g) is False  # not HOLDING
 
 
 def test_entry_only_in_first_60s():

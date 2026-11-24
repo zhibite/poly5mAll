@@ -46,6 +46,28 @@ def test_doc_defaults_load():
     assert s.web.enabled is True
 
 
+def test_per_asset_force_exit_defaults_and_override(tmp_path):
+    s = load_settings()
+    by_name = {a.asset: a for a in s.assets}
+    assert by_name["ETH"].force_exit_s == pytest.approx(240.0)
+    assert by_name["ETH"].force_exit_deadline_s == pytest.approx(295.0)
+
+    path = tmp_path / "config.toml"
+    path.write_text(
+        "[GENERAL]\n"
+        "FORCE_EXIT_S = 240\n"
+        "FORCE_EXIT_DEADLINE_S = 295\n"
+        "[ASSETS.ETH]\n"
+        "FORCE_EXIT_S = 120\n",
+        encoding="utf-8",
+    )
+    s = load_settings(path)
+    eth = s.asset("ETH")
+    assert eth.force_exit_s == pytest.approx(120.0)
+    # No explicit deadline: min(global 295, 120 + 15)
+    assert eth.force_exit_deadline_s == pytest.approx(135.0)
+
+
 def test_defaults_without_config_file(tmp_path):
     # Even with no config.toml, the six non-BTC assets are on, the price
     # stop is off, and the built-in official fee schedule still applies.
