@@ -173,7 +173,7 @@ def fee_table(plans: list[SidePlan], *, include_fees: bool = True,
     )
     lines.append(
         "net/trade is the expected profit on each plan's configured stake "
-        "(default 3 U; the doc's backtest used 10 U). Fees alone can make "
+        "(default 2 U; the doc's backtest used 10 U). Fees alone can make "
         "a TP a loss."
     )
     return "\n".join(lines)

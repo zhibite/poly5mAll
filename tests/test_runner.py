@@ -335,8 +335,11 @@ async def test_same_side_limit(tmp_path):
 
 @pytest.mark.asyncio
 async def test_same_side_per_window_limit(tmp_path):
-    """At most 3 same-side entries per window; old windows do not block."""
+    """At most MAX_SAME_SIDE_PER_WINDOW same-side entries per window.
+    Positions still settling from an earlier window do not block the next.
+    """
     settings = _settings()
+    limit = settings.execution.max_same_side_per_window
     runtime = RuntimeConfig(tmp_path / "runtime_config.json", settings.assets)
     runner = MultiAssetRunner(
         settings,
@@ -353,8 +356,10 @@ async def test_same_side_per_window_limit(tmp_path):
             self.side = side
             self.window_start = window_start
 
-    runner.all_positions = lambda: [_P(Side.UP, T0) for _ in range(3)]  # type: ignore[method-assign]
-    assert runner.same_side_open_in_window(Side.UP, T0) == 3
+    runner.all_positions = lambda: [  # type: ignore[method-assign]
+        _P(Side.UP, T0) for _ in range(limit)
+    ]
+    assert runner.same_side_open_in_window(Side.UP, T0) == limit
     assert runner.same_side_open_in_window(Side.UP, T0 - 300) == 0
     assert await runner.reserve_entry(Side.UP, T0) is False
     assert await runner.reserve_entry(Side.DOWN, T0) is True
@@ -364,7 +369,7 @@ async def test_same_side_per_window_limit(tmp_path):
 
     # In-flight attempts reserve slots too, so concurrent assets cannot all
     # pass the check before any fill lands.
-    for _ in range(3):
+    for _ in range(limit):
         assert await runner.reserve_entry(Side.DOWN, T0 + 600) is True
     assert await runner.reserve_entry(Side.DOWN, T0 + 600) is False
     await runner.release_entry(Side.DOWN, T0 + 600)

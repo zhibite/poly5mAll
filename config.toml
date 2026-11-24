@@ -49,8 +49,8 @@ REQUEST_TIMEOUT_S = 5.0
 PAPER_TRADING = true
 LIVE_ENABLED = false
 
-# Fixed stake per trade.  The doc's backtest used 10 U; live default is 3 U.
-STAKE_USD = 3.0
+# Fixed stake per trade.  The doc's backtest used 10 U; live default is 2 U.
+STAKE_USD = 2.0
 
 # Official Polymarket taker fee:
 #   fee = shares * rate * p * (1 - p)
@@ -80,10 +80,10 @@ MIN_ENTRY_BID_DEPTH_USD = 5.0
 # Max concurrent open positions with the same side across all assets.
 MAX_SAME_SIDE_POSITIONS = 6
 # Max same-side entries inside one 5m window, across all assets.  Crypto
-# 5m markets are highly correlated: four UP entries in one window are
+# 5m markets are highly correlated: three UP entries in one window are
 # effectively one leveraged bet.  Earlier-window positions still awaiting
 # settlement do not count.  0 disables the cap.
-MAX_SAME_SIDE_PER_WINDOW = 3
+MAX_SAME_SIDE_PER_WINDOW = 2
 
 # Retry cadence when a FAK order returns no fill.
 ENTRY_RETRY_S = 1.0
