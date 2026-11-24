@@ -7,7 +7,7 @@ _BODY = r"""
 <div class="page-head">
   <div>
     <h1>策略配置</h1>
-    <div class="page-sub">7 个币的 5m 参数 · 默认只启用 BTC · 覆盖持久化到 data/runtime_config.json</div>
+    <div class="page-sub">7 个币的 5m 参数 · 默认关闭 BTC、启用其余 6 个币 · 覆盖持久化到 data/runtime_config.json</div>
   </div>
   <div class="head-meta">
     配置版本 <b id="version">--</b><br>
@@ -31,7 +31,7 @@ _BODY = r"""
   <div class="stat-card">
     <div class="stat-label">已启用</div>
     <div class="stat-value green" id="enabled-count">--</div>
-    <div class="stat-sub">默认仅 BTC</div>
+    <div class="stat-sub">默认 6 个币（BTC 关闭）</div>
   </div>
   <div class="stat-card">
     <div class="stat-label">全局每笔</div>
@@ -85,7 +85,7 @@ _BODY = r"""
 
 <div class="save-bar">
   <button id="save" class="btn btn-primary">保存配置</button>
-  <button id="reset" class="btn btn-ghost">恢复默认（仅 BTC）</button>
+  <button id="reset" class="btn btn-ghost">恢复默认（6 币，BTC 关闭）</button>
   <span class="msg" id="msg"></span>
 </div>
 
@@ -294,7 +294,7 @@ async function save() {
 }
 
 async function reset() {
-  if (!confirm('恢复为 config.toml 的默认值？\n默认只启用 BTC。')) return;
+  if (!confirm('恢复为 config.toml 的默认值？\n默认关闭 BTC、启用其余 6 个币。')) return;
   $('msg').textContent = '恢复中...';
   try {
     const r = await fetch('/api/config/reset', {method: 'POST'});
@@ -302,7 +302,7 @@ async function reset() {
     if (!r.ok) throw new Error(data.detail || ('HTTP ' + r.status));
     DATA = data;
     render();
-    $('msg').textContent = '✅ 已恢复默认（仅 BTC）';
+    $('msg').textContent = '✅ 已恢复默认（6 币，BTC 关闭）';
     $('msg').className = 'msg green';
   } catch (e) {
     $('msg').textContent = '⚠️ ' + e.message;

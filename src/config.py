@@ -561,8 +561,10 @@ def _load_assets(
             f"{name}_SIDES", str(_get(table, "SIDES", default_sides))
         ).upper()
         sides = _parse_sides(sides_raw)
-        # Safe default when config.toml is absent: only BTC is on.
-        default_enabled = name == "BTC"
+        # Fallback when config.toml is absent: the six non-BTC assets are
+        # on, BTC stays off (its 5% taker fee is not covered by the
+        # 0.25/10% TP over the 6-month recheck).
+        default_enabled = name != "BTC"
         enabled = _env_bool(
             f"{name}_ENABLED",
             _as_bool(_get(table, "ENABLED", default_enabled), default_enabled),

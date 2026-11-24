@@ -117,8 +117,8 @@ def test_config_defaults_and_update(client):
     data = r.json()
     assert data["version"] == 0  # empty runtime file
     by_name = {a["asset"]: a for a in data["assets"]}
-    assert by_name["BTC"]["enabled"] is True
-    assert by_name["ETH"]["enabled"] is False
+    assert by_name["BTC"]["enabled"] is False
+    assert by_name["ETH"]["enabled"] is True
     assert by_name["BTC"]["stop_loss_pct"] == pytest.approx(0.0)
     assert data["web"]["port"] == 8033
     assert data["taker_fee_rate"] == pytest.approx(0.01)
@@ -157,7 +157,8 @@ def test_config_defaults_and_update(client):
     r = client.post("/api/config/reset")
     assert r.status_code == 200
     by_name = {a["asset"]: a for a in r.json()["assets"]}
-    assert by_name["ETH"]["enabled"] is False
+    assert by_name["ETH"]["enabled"] is True
+    assert by_name["BTC"]["enabled"] is False
 
 
 def test_trades_stats_and_filters(client):

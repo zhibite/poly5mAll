@@ -25,10 +25,14 @@ def test_doc_defaults_load():
     assert by_name["BTC"].stop_loss_pct == pytest.approx(0.0)
     assert by_name["ETH"].stop_loss_pct == pytest.approx(0.0)
     assert by_name["XRP"].stop_loss_pct == pytest.approx(0.0)
-    # Default deployment only enables BTC; the Web config page turns others on.
-    assert by_name["BTC"].enabled is True
-    assert all(not by_name[n].enabled for n in by_name if n != "BTC")
-    assert [p.asset for p in s.plans()] == ["BTC", "BTC"]
+    # Default deployment enables the six non-BTC assets and leaves BTC off
+    # (BTC's 5% taker fee is still negative for 0.25/10% in the recheck).
+    assert by_name["BTC"].enabled is False
+    assert all(by_name[n].enabled for n in by_name if n != "BTC")
+    assert [p.asset for p in s.plans()] == [
+        "ETH", "ETH", "BNB", "BNB", "SOL", "SOL",
+        "DOGE", "DOGE", "XRP", "XRP", "HYPE", "HYPE",
+    ]
     assert s.execution.paper_trading is True
     assert s.execution.require_two_sided_book is True
     assert s.execution.min_entry_bid_depth_usd == pytest.approx(5.0)
@@ -41,10 +45,12 @@ def test_doc_defaults_load():
 
 
 def test_defaults_without_config_file(tmp_path):
-    # Even with no config.toml, the safe default is BTC-only, the price
+    # Even with no config.toml, the six non-BTC assets are on, the price
     # stop is off, and the built-in official fee schedule still applies.
     s = load_settings(tmp_path / "missing.toml")
-    assert [a.asset for a in s.assets if a.enabled] == ["BTC"]
+    assert [a.asset for a in s.assets if a.enabled] == [
+        "ETH", "BNB", "SOL", "DOGE", "XRP", "HYPE",
+    ]
     by_name = {a.asset: a for a in s.assets}
     assert by_name["BTC"].stop_loss_pct == pytest.approx(0.0)
     assert by_name["ETH"].stop_loss_pct == pytest.approx(0.0)

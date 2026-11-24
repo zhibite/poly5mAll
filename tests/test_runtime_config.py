@@ -12,10 +12,10 @@ def _runtime(tmp_path) -> RuntimeConfig:
     return RuntimeConfig(tmp_path / "runtime_config.json", s.assets)
 
 
-def test_defaults_only_btc_enabled(tmp_path):
+def test_defaults_six_enabled_btc_off(tmp_path):
     rt = _runtime(tmp_path)
-    assert rt.asset("BTC").enabled is True
-    assert rt.asset("ETH").enabled is False
+    assert rt.asset("BTC").enabled is False
+    assert rt.asset("ETH").enabled is True
     assert rt.asset("BTC").stop_loss_pct == pytest.approx(0.0)
     assert rt.asset("ETH").stop_loss_pct == pytest.approx(0.0)
     assert rt.asset("XRP").sides == (Side.UP, Side.DOWN)
@@ -76,10 +76,11 @@ def test_partial_update_preserves_other_fields(tmp_path):
 
 def test_reset_returns_to_baseline(tmp_path):
     rt = _runtime(tmp_path)
-    rt.update({"assets": {"ETH": {"enabled": True}}})
-    assert rt.asset("ETH").enabled is True
-    rt.reset()
+    rt.update({"assets": {"ETH": {"enabled": False}}})
     assert rt.asset("ETH").enabled is False
+    rt.reset()
+    assert rt.asset("ETH").enabled is True
+    assert rt.asset("BTC").enabled is False
     assert not (tmp_path / "runtime_config.json").exists()
 
 

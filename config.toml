@@ -135,10 +135,14 @@ LEVEL = "INFO"
 # The doc's direction study recommended DOWN (UP for XRP), but the operator
 # default in this project is BOTH for every asset.  Change per coin in
 # /config if you want one-sided trading.
+#
+# Enabled set: the six non-BTC assets are on; BTC is off.  BTC's 5% taker
+# fee is still too expensive for the 0.25/10% TP over the 6-month recheck,
+# so it stays disabled until the fee or the parameters improve.
 # ---------------------------------------------------------------------------
 
 [ASSETS.BTC]
-ENABLED = true  # 默认只启用 BTC；其余币可通过 Web 配置页开启
+ENABLED = false  # BTC 5m 费率 5%，6 个月复测费后仍亏损，默认关闭
 SIDES = "BOTH"
 ENTRY_THRESH = 0.25
 TP_PCT = 0.10
@@ -147,7 +151,7 @@ TAKER_FEE_RATE = 0.05
 # Backtest: BTC 0.25/10% benefits from a 20% stop.
 
 [ASSETS.ETH]
-ENABLED = false
+ENABLED = true
 # ETH comes from the older both-sides report; 0.18 is the reported sweet spot.
 SIDES = "BOTH"
 ENTRY_THRESH = 0.18
@@ -155,32 +159,32 @@ TP_PCT = 0.15
 # Low entry: the 20% stop tested worse; keep it off.
 
 [ASSETS.BNB]
-ENABLED = false
+ENABLED = true
 SIDES = "BOTH"
 ENTRY_THRESH = 0.15
 TP_PCT = 0.10
 
 [ASSETS.SOL]
-ENABLED = false
+ENABLED = true
 SIDES = "BOTH"
 ENTRY_THRESH = 0.15
 TP_PCT = 0.20
 
 [ASSETS.DOGE]
-ENABLED = false
+ENABLED = true
 SIDES = "BOTH"
 ENTRY_THRESH = 0.12
 TP_PCT = 0.25
 
 [ASSETS.XRP]
-ENABLED = false
+ENABLED = true
 # Doc §4.3 found an UP advantage; the operator default here is BOTH.
 SIDES = "BOTH"
 ENTRY_THRESH = 0.10
 TP_PCT = 0.25
 
 [ASSETS.HYPE]
-ENABLED = false
+ENABLED = true
 # Operator override: 0.14/25% (the doc's 0.30/10% was the original top-1).
 SIDES = "BOTH"
 ENTRY_THRESH = 0.14
