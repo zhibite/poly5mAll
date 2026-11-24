@@ -73,3 +73,17 @@ def test_parse_fill_per_call_fee_rate_overrides_default():
     )
     assert fill is not None
     assert fill.fee == pytest.approx(40 * 0.05 * 0.25 * 0.75)
+
+
+@pytest.mark.asyncio
+async def test_fak_sell_dust_is_not_posted():
+    c = _client()
+    c._client = object()
+    assert await c.place_fak_sell("tok", 0.0017, 0.2, 0.01) is None
+
+
+@pytest.mark.asyncio
+async def test_fak_sell_below_min_order_size_not_posted():
+    c = _client()
+    c._client = object()
+    assert await c.place_fak_sell("tok", 4.99, 0.2, 0.01) is None

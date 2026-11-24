@@ -20,7 +20,7 @@ from typing import Any, Callable, Optional
 
 from src.economics import taker_fee
 from src.infra.logging import get_logger
-from src.models import Fill
+from src.models import MIN_ORDER_SHARES, SIZE_PRECISION, Fill
 
 log = get_logger("clob")
 
@@ -214,8 +214,10 @@ class CLOBClient:
         if not self._client:
             return None
         price = _round_down(limit_price, tick_size)
-        size = _round_down(shares, 0.0001)
-        if price <= 0 or size <= 0:
+        # CLOB market orders size in 0.01-share lots and require at least
+        # 5 shares; smaller orders are rejected as "invalid maker amount".
+        size = _round_down(shares, SIZE_PRECISION)
+        if price <= 0 or size < MIN_ORDER_SHARES - 1e-9:
             return None
         try:
             args = MarketOrderArgs(

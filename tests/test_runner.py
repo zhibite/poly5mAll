@@ -489,3 +489,66 @@ async def test_restored_ended_position_settles(tmp_path):
     assert len(lines) == 1
     assert '"reason": "settle"' in lines[0]
     assert '"pnl_net": 30.0' in lines[0]
+
+
+@pytest.mark.asyncio
+async def test_forced_exit_writes_off_dust_without_sell(tmp_path):
+    """A sub-0.01 remainder must not be sent to the CLOB as a sell."""
+    settings = _settings()
+    cache = PriceCache()
+    cache.set_best_bid_ask("down-token", 0.23, 0.24, ts=T0 + 10)
+    broker = FakeBroker()
+    trades = []
+    runner = AssetRunner(
+        settings.assets[0],
+        settings,
+        broker,
+        cache,
+        FakeMarketService(_window()),
+        StateStore(tmp_path),
+        can_enter=lambda side: (True, "ok"),
+        on_trade=trades.append,
+        on_state_change=lambda: None,
+    )
+
+    await runner.tick(T0 + 10)
+    pos = runner.sides[0].position
+    assert pos is not None
+    pos.sold_shares = pos.shares - 0.001
+
+    await runner.tick(T0 + 250)
+    assert broker.sells == []
+    assert len(trades) == 1
+    assert trades[0].reason == "time_exit"
+    assert "dust" in trades[0].note
+
+
+@pytest.mark.asyncio
+async def test_forced_exit_below_min_size_waits_for_settlement(tmp_path):
+    """A 2-share remainder cannot be sold; leave it for settlement."""
+    settings = _settings()
+    cache = PriceCache()
+    cache.set_best_bid_ask("down-token", 0.23, 0.24, ts=T0 + 10)
+    broker = FakeBroker()
+    trades = []
+    runner = AssetRunner(
+        settings.assets[0],
+        settings,
+        broker,
+        cache,
+        FakeMarketService(_window()),
+        StateStore(tmp_path),
+        can_enter=lambda side: (True, "ok"),
+        on_trade=trades.append,
+        on_state_change=lambda: None,
+    )
+
+    await runner.tick(T0 + 10)
+    pos = runner.sides[0].position
+    assert pos is not None
+    pos.sold_shares = pos.shares - 2.0
+
+    await runner.tick(T0 + 250)
+    assert broker.sells == []
+    assert trades == []
+    assert runner.sides[0].status is SideStatus.SETTLE_PENDING

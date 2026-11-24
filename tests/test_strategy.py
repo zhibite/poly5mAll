@@ -160,6 +160,49 @@ def test_partial_exit_stays_holding_until_flat():
     assert record.pnl_gross == pytest.approx(1.0)
 
 
+def test_partial_tp_sell_writes_off_dust_and_closes():
+    """A 0.0017-share remainder cannot be sold; close and book the trade."""
+    side = SideRuntime(_plan(), _window())
+    e = ExecutionConfig()
+    entry = Fill(
+        "down-token", "BUY", 29.411765, 5.0, 0.17, 0.0415, T0 + 10
+    )
+    side.on_entry_fill(entry, T0 + 10, e)
+    fill = Fill(
+        "down-token", "SELL", 29.41, 6.1761, 0.21, 0.04879119, T0 + 179
+    )
+
+    record = side.on_exit_fill(fill, T0 + 179, "tp", e, "live")
+
+    assert record is not None
+    assert side.status is SideStatus.CLOSED
+    assert "dust" in record.note
+    assert record.exit_usdc == pytest.approx(6.1761)
+    assert record.pnl_net == pytest.approx(
+        6.1761 - 5.0 - 0.0415 - 0.04879119
+    )
+    assert side.position is not None
+    assert side.position.is_flat
+    assert side.position.sold_shares == pytest.approx(29.411765)
+
+
+def test_dust_only_position_closes_on_exit():
+    side = SideRuntime(_plan(), _window())
+    e = ExecutionConfig()
+    entry = Fill("down-token", "BUY", 10.0, 1.7, 0.17, 0.014, T0 + 10)
+    side.on_entry_fill(entry, T0 + 10, e)
+    assert side.position is not None
+    side.position.sold_shares = 9.999
+
+    record = side.on_dust(T0 + 250, "time_exit", "live")
+
+    assert record is not None
+    assert side.status is SideStatus.CLOSED
+    assert "dust" in record.note
+    assert record.exit_usdc == pytest.approx(0.0)
+    assert side.position.is_flat
+
+
 def test_settlement_booked_as_binary_payout():
     side = SideRuntime(_plan(), _window())
     e = ExecutionConfig()
@@ -183,3 +226,37 @@ def test_settlement_booked_as_binary_payout():
     assert record.entry_quote_source == "ws_bba"
     assert record.entry_quote_ts == pytest.approx(T0 + 10)
     assert side.status is SideStatus.CLOSED
+
+
+def test_partial_tp_remainder_below_min_size_waits_for_settlement():
+    side = SideRuntime(_plan(), _window())
+    e = ExecutionConfig()
+    entry = Fill(
+        "down-token", "BUY", 29.411765, 5.0, 0.17, 0.0415, T0 + 10
+    )
+    side.on_entry_fill(entry, T0 + 10, e)
+    pos = side.position
+    assert pos is not None
+    pos.tp_observed_price = 0.205
+    pos.tp_observed_bid = 0.20
+    pos.tp_observed_source = "ws_bba"
+    pos.tp_observed_ts = T0 + 179
+
+    # Leave 2.001765 shares: above one size lot, below the 5-share CLOB
+    # minimum, so it cannot be sold and must be settled.
+    fill = Fill(
+        "down-token", "SELL", 27.41, 27.41 * 0.21, 0.21, 0.04, T0 + 179
+    )
+    assert side.on_exit_fill(fill, T0 + 179, "tp", e, "live") is None
+    assert side.status is SideStatus.SETTLE_PENDING
+    assert pos.remaining_shares == pytest.approx(2.001765)
+
+    record = side.on_settled(1.0, T0 + 310, "live", note="gamma resolution")
+    assert record is not None
+    assert record.reason == "settle"
+    assert "partial exit + remainder settlement" in record.note
+    assert record.tp_observed_bid == pytest.approx(0.20)
+    assert record.exit_usdc == pytest.approx(27.41 * 0.21 + 2.001765)
+    assert record.exit_price == pytest.approx(
+        record.exit_usdc / 29.411765
+    )

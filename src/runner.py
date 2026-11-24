@@ -26,6 +26,8 @@ from src.infra.timeutil import day_key, utc_hms, utc_iso
 from src.market.market_ws import MarketWS, MarketWSManager, PriceCache
 from src.market.service import MarketService
 from src.models import (
+    MIN_ORDER_SHARES,
+    SIZE_PRECISION,
     DailyStats,
     MarketWindow,
     Phase,
@@ -434,6 +436,37 @@ class AssetRunner:
         pos = side.position
         if pos is None or pos.remaining_shares <= 0:
             return
+        remaining = pos.remaining_shares
+        if remaining < SIZE_PRECISION - 1e-9:
+            # Below one size lot: worth <1 cent, write it off and close.
+            record = side.on_dust(now, reason, self.settings.mode)
+            log.warning(
+                "[{}] {} {} dust {:.6f} written off (reason={})",
+                self.asset,
+                side.plan.side.value,
+                pos.position_id,
+                remaining,
+                reason,
+            )
+            if record is not None:
+                self._on_trade(record)
+            self._on_state_change()
+            return
+        if remaining < MIN_ORDER_SHARES - 1e-9:
+            # The CLOB refuses orders below 5 shares.  Do not retry; leave
+            # the remainder for Gamma settlement, which keeps its value.
+            side.on_dust_pending(now, reason)
+            log.warning(
+                "[{}] {} {} remainder {:.6f} < min order {:.2f}; "
+                "waiting for settlement",
+                self.asset,
+                side.plan.side.value,
+                pos.position_id,
+                remaining,
+                MIN_ORDER_SHARES,
+            )
+            self._on_state_change()
+            return
         side.status = SideStatus.EXITING
         side.last_exit_attempt = now
 
@@ -587,6 +620,29 @@ class AssetRunner:
             if side.position is None or side.position.is_flat:
                 continue
             pos = side.position
+            remaining = pos.remaining_shares
+            if remaining < SIZE_PRECISION - 1e-9:
+                record = side.on_dust(now, "shutdown", self.settings.mode)
+                log.warning(
+                    "[{}] {} dust {:.6f} written off (shutdown)",
+                    self.asset,
+                    pos.position_id,
+                    remaining,
+                )
+                if record is not None:
+                    self._on_trade(record)
+                continue
+            if remaining < MIN_ORDER_SHARES - 1e-9:
+                side.on_dust_pending(now, "shutdown")
+                log.warning(
+                    "[{}] {} remainder {:.6f} < min order {:.2f}; "
+                    "left for settlement",
+                    self.asset,
+                    pos.position_id,
+                    remaining,
+                    MIN_ORDER_SHARES,
+                )
+                continue
             tick = pos.tick_size if pos.tick_size > 0 else (
                 self.window.tick_size if self.window else 0.01
             )

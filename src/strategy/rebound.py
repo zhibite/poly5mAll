@@ -19,6 +19,8 @@ from dataclasses import dataclass
 
 from src.config import ExecutionConfig, FeedConfig, GeneralConfig
 from src.models import (
+    MIN_ORDER_SHARES,
+    SIZE_PRECISION,
     Fill,
     MarketWindow,
     Phase,
@@ -201,12 +203,64 @@ class SideRuntime:
         self.exit_attempts += 1
         self.last_exit_attempt = now
 
+        dust = position.remaining_shares
+        written_off = 0.0
         if not position.is_flat:
-            self.status = SideStatus.HOLDING
-            return None
+            # A remainder below one size lot is worth <1 cent and is
+            # written off.  A remainder below the CLOB minimum (5 shares)
+            # cannot be sold but may still be worth real money, so leave
+            # it for Gamma settlement instead of retrying or zeroing it.
+            if 0 < dust < SIZE_PRECISION - 1e-9:
+                position.sold_shares = position.shares
+                written_off = dust
+            elif dust < MIN_ORDER_SHARES - 1e-9:
+                self.status = SideStatus.SETTLE_PENDING
+                self.closed_reason = "remainder_pending"
+                return None
+            else:
+                self.status = SideStatus.HOLDING
+                return None
 
         self.status = SideStatus.CLOSED
         self.closed_reason = reason
+        note = (
+            f"dust {written_off:.6f} written off" if written_off > 0 else ""
+        )
+        return self._close_record(now, reason, mode, note)
+
+    def on_dust(
+        self, now: float, reason: str, mode: str
+    ) -> TradeRecord | None:
+        """Write off a remainder below one 0.01-share size lot."""
+        position = self.position
+        if position is None or position.is_flat:
+            return None
+        dust = position.remaining_shares
+        if dust >= SIZE_PRECISION - 1e-9:
+            return None
+        position.sold_shares = position.shares
+        self.status = SideStatus.CLOSED
+        self.closed_reason = reason
+        return self._close_record(
+            now, reason, mode, note=f"dust {dust:.6f} written off"
+        )
+
+    def on_dust_pending(self, now: float, reason: str) -> None:
+        """Stop selling a remainder below the CLOB minimum order size."""
+        position = self.position
+        if position is None or position.is_flat:
+            return
+        if position.remaining_shares >= MIN_ORDER_SHARES - 1e-9:
+            return
+        self.status = SideStatus.SETTLE_PENDING
+        self.closed_reason = "remainder_pending"
+        self.last_exit_attempt = now
+
+    def _close_record(
+        self, now: float, reason: str, mode: str, note: str = ""
+    ) -> TradeRecord:
+        position = self.position
+        assert position is not None
         exit_usdc = position.exit_proceeds
         exit_fee = position.exit_fees
         pnl_gross = exit_usdc - position.cost_usd
@@ -251,6 +305,7 @@ class SideRuntime:
             entry_quote_spread=position.entry_quote_spread,
             entry_quote_source=position.entry_quote_source,
             entry_quote_ts=position.entry_quote_ts,
+            note=note,
         )
 
     def on_exit_missed(self, now: float) -> None:
@@ -270,6 +325,7 @@ class SideRuntime:
         position = self.position
         if position is None or position.is_flat:
             return None
+        had_partial = position.sold_shares > 0
         payout = position.remaining_shares * float(payout_per_share)
         position.sold_shares += position.remaining_shares
         position.exit_proceeds += payout
@@ -277,6 +333,18 @@ class SideRuntime:
         self.closed_reason = "settle"
         pnl_gross = position.exit_proceeds - position.cost_usd
         pnl_net = pnl_gross - position.entry_fee - position.exit_fees
+        exit_usdc = position.exit_proceeds
+        exit_price = (
+            exit_usdc / position.sold_shares
+            if position.sold_shares > 0
+            else float(payout_per_share)
+        )
+        observed = position.tp_observed_ts > 0
+        if had_partial:
+            note = (
+                (note + "; " if note else "")
+                + "partial exit + remainder settlement"
+            )
         return TradeRecord(
             position_id=position.position_id,
             asset=position.asset,
@@ -290,8 +358,8 @@ class SideRuntime:
             entry_fee=position.entry_fee,
             tp_price=position.tp_price,
             exit_ts=now,
-            exit_price=float(payout_per_share),
-            exit_usdc=position.exit_proceeds,
+            exit_price=exit_price,
+            exit_usdc=exit_usdc,
             exit_fee=position.exit_fees,
             reason="settle",
             pnl_gross=pnl_gross,
@@ -299,6 +367,13 @@ class SideRuntime:
             stake_usd=position.stake_usd,
             mode=mode,
             sl_price=position.sl_price,
+            tp_observed_price=position.tp_observed_price if observed else 0.0,
+            tp_observed_bid=position.tp_observed_bid if observed else 0.0,
+            tp_observed_ask=position.tp_observed_ask if observed else 0.0,
+            tp_observed_source=(
+                position.tp_observed_source if observed else ""
+            ),
+            tp_observed_ts=position.tp_observed_ts if observed else 0.0,
             entry_quote_mid=position.entry_quote_mid,
             entry_quote_bid=position.entry_quote_bid,
             entry_quote_ask=position.entry_quote_ask,
