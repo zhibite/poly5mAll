@@ -21,7 +21,7 @@ _BODY = r"""
   <div class="stat-card">
     <div class="stat-label">模式</div>
     <div class="stat-value" id="mode">--</div>
-    <div class="stat-sub">paper / live</div>
+    <div class="stat-sub">仅统计已启用市场</div>
   </div>
   <div class="stat-card">
     <div class="stat-label">默认 taker 费率</div>
@@ -174,8 +174,11 @@ function render() {
   const cfg = DATA;
   $('version').textContent = 'v' + (cfg.version ?? 0);
   $('runtime-path').textContent = cfg.runtime_path || '(not persisted)';
-  const liveCount = (cfg.assets || []).filter((a) => a.mode === 'live').length;
-  const paperCount = (cfg.assets || []).filter((a) => a.mode !== 'live').length;
+  // Only enabled markets matter; a disabled market's mode would otherwise
+  // inflate the count (e.g. disabled BTC falls back to the default mode).
+  const enabledAssets = (cfg.assets || []).filter((a) => a.enabled);
+  const liveCount = enabledAssets.filter((a) => a.mode === 'live').length;
+  const paperCount = enabledAssets.length - liveCount;
   $('mode').textContent = `实盘 ${liveCount} · 纸盘 ${paperCount}`;
   $('mode').className = 'stat-value ' + (liveCount ? 'red' : 'green');
   $('fee-rate').textContent = fmt(Number(cfg.taker_fee_rate) * 100, 1) + '%';
