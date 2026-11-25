@@ -100,6 +100,7 @@ def test_same_side_per_window_cap_update_and_persist(tmp_path):
 
 _RISK_DEFAULTS = {
     "max_intraday_drawdown_usd": 8.0,
+    "intraday_drawdown_pause_min": 60.0,
     "max_positions_per_window": 3,
     "max_window_notional_usd": 6.0,
     "asset_perf_lookback_days": 7.0,
@@ -119,6 +120,7 @@ def test_new_risk_caps_update_persist_and_reset(tmp_path):
     rt.update(
         {
             "max_intraday_drawdown_usd": 12,
+            "intraday_drawdown_pause_min": 120,
             "max_positions_per_window": 2,
             "max_window_notional_usd": 5,
             "asset_perf_lookback_days": 14,
@@ -129,6 +131,7 @@ def test_new_risk_caps_update_persist_and_reset(tmp_path):
     )
     reloaded = RuntimeConfig(path, s.assets, **_RISK_DEFAULTS)
     assert reloaded.max_intraday_drawdown_usd == pytest.approx(12.0)
+    assert reloaded.intraday_drawdown_pause_min == pytest.approx(120.0)
     assert reloaded.max_positions_per_window == 2
     assert reloaded.max_window_notional_usd == pytest.approx(5.0)
     assert reloaded.asset_perf_lookback_days == pytest.approx(14.0)
@@ -142,6 +145,8 @@ def test_new_risk_caps_update_persist_and_reset(tmp_path):
         rt.update({"max_positions_per_window": 1.5})
     with pytest.raises(ValueError):
         rt.update({"max_window_notional_usd": -1})
+    with pytest.raises(ValueError):
+        rt.update({"intraday_drawdown_pause_min": -1})
 
     reloaded.reset()
     for field, value in _RISK_DEFAULTS.items():

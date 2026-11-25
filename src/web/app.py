@@ -313,6 +313,10 @@ def create_app(
             "max_intraday_drawdown_usd": risk_value(
                 "max_intraday_drawdown_usd", e.max_intraday_drawdown_usd
             ),
+            "intraday_drawdown_pause_min": risk_value(
+                "intraday_drawdown_pause_min",
+                e.intraday_drawdown_pause_min,
+            ),
             "max_positions_per_window": risk_value(
                 "max_positions_per_window", e.max_positions_per_window
             ),

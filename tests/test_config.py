@@ -41,6 +41,7 @@ def test_doc_defaults_load():
     assert s.execution.max_same_side_per_window == 2
     assert s.execution.max_daily_loss_usd == pytest.approx(20.0)
     assert s.execution.max_intraday_drawdown_usd == pytest.approx(8.0)
+    assert s.execution.intraday_drawdown_pause_min == pytest.approx(60.0)
     assert s.execution.max_positions_per_window == 3
     assert s.execution.max_window_notional_usd == pytest.approx(6.0)
     assert s.execution.asset_perf_lookback_days == pytest.approx(7.0)
@@ -103,6 +104,7 @@ def test_invalid_risk_caps_rejected():
     for bad_exec in (
         dataclasses.replace(s.execution, asset_perf_stake_mult=1.5),
         dataclasses.replace(s.execution, max_intraday_drawdown_usd=-1.0),
+        dataclasses.replace(s.execution, intraday_drawdown_pause_min=-1.0),
         dataclasses.replace(s.execution, max_positions_per_window=-1),
         dataclasses.replace(s.execution, max_window_notional_usd=-1.0),
         dataclasses.replace(s.execution, asset_perf_lookback_days=-1.0),

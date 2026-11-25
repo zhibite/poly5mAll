@@ -467,19 +467,51 @@ async def test_window_notional_limit(tmp_path):
     assert await runner.reserve_entry(Side.DOWN, T0, 1.0) == (True, "")
 
 
-def test_intraday_drawdown_pauses_entries(tmp_path):
+def test_intraday_drawdown_pauses_then_resumes(tmp_path):
     settings = _settings()
     runner = _multi_runner(settings, tmp_path)
-    today = day_key(time.time())
+    now = float(T0)
+    today = day_key(now)
     runner.daily[today] = DailyStats(realized_pnl=1.0, peak_pnl=10.0)
-    assert runner.intraday_drawdown() == pytest.approx(9.0)
-    limit = settings.execution.max_intraday_drawdown_usd
-    assert limit == pytest.approx(8.0)
-    assert runner.entries_allowed() == (False, "intraday-drawdown")
+    assert runner.intraday_drawdown(now) == pytest.approx(9.0)
+    assert settings.execution.max_intraday_drawdown_usd == pytest.approx(8.0)
+    assert settings.execution.intraday_drawdown_pause_min == pytest.approx(
+        60.0
+    )
 
-    # A smaller drawdown still allows entries.
-    runner.daily[today] = DailyStats(realized_pnl=5.0, peak_pnl=10.0)
-    assert runner.entries_allowed() == (True, "ok")
+    # Trigger: entries pause for the configured cooldown.
+    assert runner.entries_allowed(now=now) == (False, "intraday-drawdown")
+    assert runner.daily[today].drawdown_pause_until == pytest.approx(
+        now + 3600.0
+    )
+    assert runner.entries_allowed(now=now + 3599.0) == (
+        False, "intraday-drawdown",
+    )
+
+    # Cooldown over: entries resume and the anchor is rebased to the
+    # current PnL instead of re-triggering on the old peak.
+    assert runner.entries_allowed(now=now + 3601.0) == (True, "ok")
+    assert runner.daily[today].peak_pnl == pytest.approx(1.0)
+    assert runner.daily[today].drawdown_pause_until == 0.0
+
+    # A fresh drawdown of the same size triggers a new pause.
+    runner.daily[today].add(-8.0, -8.0, 0.0)
+    assert runner.daily[today].realized_pnl == pytest.approx(-7.0)
+    assert runner.entries_allowed(now=now + 4200.0) == (
+        False, "intraday-drawdown",
+    )
+
+
+def test_intraday_drawdown_pause_zero_disables(tmp_path):
+    settings = _risk_settings(
+        intraday_drawdown_pause_min=0.0, max_daily_loss_usd=0.0
+    )
+    runner = _multi_runner(settings, tmp_path)
+    now = float(T0)
+    runner.daily[day_key(now)] = DailyStats(
+        realized_pnl=-20.0, peak_pnl=10.0
+    )
+    assert runner.entries_allowed(now=now) == (True, "ok")
 
 
 def _seed_trade(store: StateStore, asset: str, pnl_net: float) -> None:

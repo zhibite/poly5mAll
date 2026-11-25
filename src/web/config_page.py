@@ -82,10 +82,13 @@ _BODY = r"""
   <div class="controls" style="margin:8px 0 0">
     <span>日内回撤暂停
       <input id="drawdown-limit" type="number" min="0" step="1"
-             style="width:90px" value="8"> U
+             style="width:90px" value="8"> U，暂停
+      <input id="drawdown-pause" type="number" min="0" step="5"
+             style="width:80px" value="60"> 分钟
     </span>
     <span class="control-meta">UTC 当日已实现 PnL 从日内高点回落达到该值后
-      停止新开仓（0=不限）；当日不再自动恢复，已有仓位照常管理。</span>
+      停止新开仓（0=不限）；暂停到期后自动恢复，并以恢复时的 PnL 重置
+      回撤基准，已有仓位照常管理。</span>
   </div>
   <div class="controls" style="margin:8px 0 0">
     <span>单窗总笔数
@@ -268,6 +271,7 @@ function render() {
   $('daily-loss').value = cfg.max_daily_loss_usd ?? 20;
   $('window-side-limit').value = cfg.max_same_side_per_window ?? 2;
   $('drawdown-limit').value = cfg.max_intraday_drawdown_usd ?? 8;
+  $('drawdown-pause').value = cfg.intraday_drawdown_pause_min ?? 60;
   $('window-position-limit').value = cfg.max_positions_per_window ?? 3;
   $('window-notional-limit').value = cfg.max_window_notional_usd ?? 6;
   $('perf-lookback').value = cfg.asset_perf_lookback_days ?? 7;
@@ -393,7 +397,11 @@ function collect() {
   }
   const drawdownLimit = Number($('drawdown-limit').value);
   if (!(drawdownLimit >= 0)) {
-    throw new Error('日内回撤暂停必须是 >= 0 的数值（0 = 不限制）');
+    throw new Error('日内回撤阈值必须是 >= 0 的数值（0 = 不限制）');
+  }
+  const drawdownPause = Number($('drawdown-pause').value);
+  if (!(drawdownPause >= 0)) {
+    throw new Error('回撤暂停时长必须是 >= 0 的分钟数（0 = 关闭）');
   }
   const windowPositionLimit = Number($('window-position-limit').value);
   if (!(Number.isInteger(windowPositionLimit) && windowPositionLimit >= 0)) {
@@ -424,6 +432,7 @@ function collect() {
     max_daily_loss_usd: dailyLoss,
     max_same_side_per_window: windowSideLimit,
     max_intraday_drawdown_usd: drawdownLimit,
+    intraday_drawdown_pause_min: drawdownPause,
     max_positions_per_window: windowPositionLimit,
     max_window_notional_usd: windowNotionalLimit,
     asset_perf_lookback_days: perfLookback,

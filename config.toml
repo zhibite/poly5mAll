@@ -101,9 +101,12 @@ MAX_SPREAD_ABS = 0.01
 # below -MAX_DAILY_LOSS_USD.  0 disables.  Editable on /config.
 MAX_DAILY_LOSS_USD = 20.0
 # Pause new entries when the UTC day's realized PnL falls this far below
-# its intraday high-water mark.  The pause lasts for the rest of the UTC
-# day; 0 disables.  Editable on /config.
+# its intraday high-water mark.  The pause lasts INTRADAY_DRAWDOWN_PAUSE_MIN
+# minutes (default 60; use 120 for 2 h), then entries resume and the
+# drawdown anchor is rebased to the PnL at resume time.  0 disables.
+# Editable on /config.
 MAX_INTRADAY_DRAWDOWN_USD = 8.0
+INTRADAY_DRAWDOWN_PAUSE_MIN = 60.0
 # Total exposure per 5m window across BOTH sides and all assets.  Open
 # positions plus in-flight entries from earlier windows count only when
 # they belong to the same 5m window.  0 disables each cap.

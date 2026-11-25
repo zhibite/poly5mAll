@@ -207,6 +207,11 @@ class ExecutionConfig:
     # Pause new entries when the UTC day's realized PnL falls this far
     # below its intraday high-water mark.  0 disables the pause.
     max_intraday_drawdown_usd: float = 8.0
+    # Cooldown after a drawdown pause before entries resume.  When it
+    # expires the day's drawdown anchor is rebased to the current PnL, so
+    # a further pause needs a fresh drawdown of the same size.
+    # 0 disables the drawdown pause.
+    intraday_drawdown_pause_min: float = 60.0
     # Total exposure per 5m window across BOTH sides and all assets.
     # 0 disables the corresponding cap.
     max_positions_per_window: int = 3
@@ -527,6 +532,12 @@ def load_settings(config_path: str | Path | None = None) -> Settings:
             "MAX_INTRADAY_DRAWDOWN_USD",
             _as_float(
                 _get(exec_raw, "MAX_INTRADAY_DRAWDOWN_USD", 8.0), 8.0
+            ),
+        ),
+        intraday_drawdown_pause_min=_env_float(
+            "INTRADAY_DRAWDOWN_PAUSE_MIN",
+            _as_float(
+                _get(exec_raw, "INTRADAY_DRAWDOWN_PAUSE_MIN", 60.0), 60.0
             ),
         ),
         max_positions_per_window=_env_int(
@@ -861,6 +872,8 @@ def validate_settings(settings: Settings) -> None:
         raise ConfigError("MAX_DAILY_LOSS_USD must be >= 0")
     if e.max_intraday_drawdown_usd < 0:
         raise ConfigError("MAX_INTRADAY_DRAWDOWN_USD must be >= 0")
+    if e.intraday_drawdown_pause_min < 0:
+        raise ConfigError("INTRADAY_DRAWDOWN_PAUSE_MIN must be >= 0")
     if e.max_positions_per_window < 0:
         raise ConfigError("MAX_POSITIONS_PER_WINDOW must be >= 0")
     if e.max_window_notional_usd < 0:
@@ -948,7 +961,8 @@ def describe(settings: Settings) -> str:
         f"include_fees={e.include_fees}",
         (
             f"risk: daily_loss<={e.max_daily_loss_usd:g}U  "
-            f"drawdown<={e.max_intraday_drawdown_usd:g}U  "
+            f"drawdown<={e.max_intraday_drawdown_usd:g}U/"
+            f"{e.intraday_drawdown_pause_min:g}min  "
             f"window<={e.max_positions_per_window}pos/"
             f"{e.max_window_notional_usd:g}U  "
             f"asset_perf={e.asset_perf_lookback_days:g}d"

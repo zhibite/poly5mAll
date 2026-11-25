@@ -50,6 +50,7 @@ def _parse_sides(raw: Any) -> tuple[Side, ...]:
 _RISK_UPDATE_SPECS: dict[str, dict[str, Any]] = {
     "max_daily_loss_usd": {"minimum": 0.0},
     "max_intraday_drawdown_usd": {"minimum": 0.0},
+    "intraday_drawdown_pause_min": {"minimum": 0.0},
     "max_same_side_per_window": {"integer": True, "minimum": 0},
     "max_positions_per_window": {"integer": True, "minimum": 0},
     "max_window_notional_usd": {"minimum": 0.0},
@@ -170,6 +171,7 @@ class RuntimeConfig:
         max_daily_loss_usd: float | None = None,
         max_same_side_per_window: int | None = None,
         max_intraday_drawdown_usd: float | None = None,
+        intraday_drawdown_pause_min: float | None = None,
         max_positions_per_window: int | None = None,
         max_window_notional_usd: float | None = None,
         asset_perf_lookback_days: float | None = None,
@@ -209,6 +211,7 @@ class RuntimeConfig:
         # config.toml / .env value.
         initial: dict[str, float | int | None] = {
             "max_intraday_drawdown_usd": max_intraday_drawdown_usd,
+            "intraday_drawdown_pause_min": intraday_drawdown_pause_min,
             "max_positions_per_window": max_positions_per_window,
             "max_window_notional_usd": max_window_notional_usd,
             "asset_perf_lookback_days": asset_perf_lookback_days,
@@ -218,6 +221,7 @@ class RuntimeConfig:
         }
         casters = {
             "max_intraday_drawdown_usd": lambda v: max(0.0, float(v)),
+            "intraday_drawdown_pause_min": lambda v: max(0.0, float(v)),
             "max_positions_per_window": lambda v: max(0, int(v)),
             "max_window_notional_usd": lambda v: max(0.0, float(v)),
             "asset_perf_lookback_days": lambda v: max(0.0, float(v)),
@@ -246,6 +250,7 @@ class RuntimeConfig:
             max_daily_loss_usd=e.max_daily_loss_usd,
             max_same_side_per_window=e.max_same_side_per_window,
             max_intraday_drawdown_usd=e.max_intraday_drawdown_usd,
+            intraday_drawdown_pause_min=e.intraday_drawdown_pause_min,
             max_positions_per_window=e.max_positions_per_window,
             max_window_notional_usd=e.max_window_notional_usd,
             asset_perf_lookback_days=e.asset_perf_lookback_days,

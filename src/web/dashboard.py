@@ -236,7 +236,9 @@ async function refresh() {
       + ` · 单窗同向 ≤${winLimit}`
       + ` · 单窗 ${(s.window_exposure || {}).positions ?? 0}/${s.max_positions_per_window ?? '--'}笔`
       + ` ${money((s.window_exposure || {}).notional_usd, 2)}/${s.max_window_notional_usd ?? '--'}U`
-      + ` · 回撤 ${money(s.intraday_drawdown_usd, 2)}/${s.max_intraday_drawdown_usd ?? '--'}U`;
+      + ` · 回撤 ${money(s.intraday_drawdown_usd, 2)}/${s.max_intraday_drawdown_usd ?? '--'}U`
+      + ((s.drawdown_pause_remaining_s || 0) > 0
+        ? `（暂停 ${Math.ceil(s.drawdown_pause_remaining_s / 60)}m）` : '');
     $('mode-note').className = 'control-meta ' + (s.mode === 'live' ? 'red' : 'muted');
     renderAssets(s);
 

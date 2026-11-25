@@ -374,10 +374,15 @@ class DailyStats:
     losses: int = 0
     gross_pnl: float = 0.0
     fees: float = 0.0
-    # Intraday high-water mark of realized PnL (starts at 0).  The risk
-    # layer pauses new entries when peak_pnl - realized_pnl reaches the
-    # configured intraday drawdown cap.
+    # Drawdown anchor: intraday high-water mark of realized PnL (starts
+    # at 0).  The risk layer pauses new entries when peak_pnl -
+    # realized_pnl reaches the configured intraday drawdown cap.
     peak_pnl: float = 0.0
+    # Unix timestamp until which new entries stay paused after a
+    # drawdown trigger; 0 = no pause scheduled.  When the cooldown
+    # expires, peak_pnl is rebased to the current realized PnL so the
+    # next pause needs a fresh drawdown of the same size.
+    drawdown_pause_until: float = 0.0
 
     def add(self, pnl_net: float, pnl_gross: float, fee: float) -> None:
         self.realized_pnl += pnl_net
@@ -399,6 +404,7 @@ class DailyStats:
             "gross_pnl": round(self.gross_pnl, 6),
             "fees": round(self.fees, 6),
             "peak_pnl": round(self.peak_pnl, 6),
+            "drawdown_pause_until": round(self.drawdown_pause_until, 3),
         }
 
     @classmethod
@@ -417,4 +423,7 @@ class DailyStats:
             gross_pnl=float(raw.get("gross_pnl", 0.0)),
             fees=float(raw.get("fees", 0.0)),
             peak_pnl=max(peak, realized),
+            drawdown_pause_until=float(
+                raw.get("drawdown_pause_until", 0.0) or 0.0
+            ),
         )

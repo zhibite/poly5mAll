@@ -132,6 +132,7 @@ def test_config_defaults_and_update(client):
     assert by_name["BTC"]["stop_loss_pct"] == pytest.approx(0.0)
     assert data["web"]["port"] == 8033
     assert data["max_intraday_drawdown_usd"] == pytest.approx(8.0)
+    assert data["intraday_drawdown_pause_min"] == pytest.approx(60.0)
     assert data["max_positions_per_window"] == 3
     assert data["max_window_notional_usd"] == pytest.approx(6.0)
     assert data["asset_perf_lookback_days"] == pytest.approx(7.0)
@@ -166,6 +167,7 @@ def test_config_defaults_and_update(client):
             "max_daily_loss_usd": 15,
             "max_same_side_per_window": 3,
             "max_intraday_drawdown_usd": 12,
+            "intraday_drawdown_pause_min": 120,
             "max_positions_per_window": 2,
             "max_window_notional_usd": 5,
             "asset_perf_lookback_days": 14,
@@ -178,6 +180,7 @@ def test_config_defaults_and_update(client):
     data = r.json()
     assert data["max_same_side_per_window"] == 3
     assert data["max_intraday_drawdown_usd"] == pytest.approx(12.0)
+    assert data["intraday_drawdown_pause_min"] == pytest.approx(120.0)
     assert data["max_positions_per_window"] == 2
     assert data["max_window_notional_usd"] == pytest.approx(5.0)
     assert data["asset_perf_lookback_days"] == pytest.approx(14.0)

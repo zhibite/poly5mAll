@@ -1127,6 +1127,16 @@ class MultiAssetRunner:
         )
 
     @property
+    def intraday_drawdown_pause_min(self) -> float:
+        """Cooldown after a drawdown trigger (0 = drawdown pause off)."""
+        return float(
+            self._runtime_value(
+                "intraday_drawdown_pause_min",
+                self.settings.execution.intraday_drawdown_pause_min,
+            )
+        )
+
+    @property
     def max_positions_per_window(self) -> int:
         """Effective per-window total position cap (0 = off)."""
         return int(
@@ -1338,24 +1348,63 @@ class MultiAssetRunner:
             return 0.0
         return max(0.0, stats.peak_pnl - stats.realized_pnl)
 
-    def entries_allowed(self, side: Side | None = None) -> tuple[bool, str]:
+    def _drawdown_paused(self, today: DailyStats, now_f: float) -> bool:
+        """Apply or expire the intraday drawdown cooldown.
+
+        Returns True while entries must stay paused.  A trigger pauses
+        entries for ``intraday_drawdown_pause_min`` minutes; when that
+        expires the drawdown anchor is rebased to the current PnL, so the
+        next pause needs a fresh drawdown of the same size instead of
+        re-triggering on the old high-water mark.
+        """
+        limit = self.max_intraday_drawdown_usd
+        cooldown_min = self.intraday_drawdown_pause_min
+        if limit <= 0 or cooldown_min <= 0:
+            return False
+        if today.drawdown_pause_until > now_f:
+            return True
+        if today.drawdown_pause_until > 0:
+            today.peak_pnl = today.realized_pnl
+            today.drawdown_pause_until = 0.0
+            self._save_state()
+            log.warning(
+                "intraday drawdown cooldown over; entries resumed "
+                "(anchor={:+.4f}U)",
+                today.peak_pnl,
+            )
+            return False
+        drawdown = today.peak_pnl - today.realized_pnl
+        if drawdown >= limit - 1e-9:
+            today.drawdown_pause_until = now_f + cooldown_min * 60.0
+            self._save_state()
+            log.warning(
+                "intraday drawdown {:.4f}U >= {:.4f}U; entries paused "
+                "for {:g} min (until {})",
+                drawdown,
+                limit,
+                cooldown_min,
+                utc_iso(today.drawdown_pause_until),
+            )
+            return True
+        return False
+
+    def entries_allowed(
+        self, side: Side | None = None, now: float | None = None
+    ) -> tuple[bool, str]:
         e = self.settings.execution
         if self.pause_new_entries:
             return False, self.pause_reason or "paused"
         kill_path = self.settings.resolve_path(e.kill_switch_file)
         if e.kill_switch_file and kill_path.exists():
             return False, "kill-switch"
-        today = self.daily.get(day_key(time.time()))
+        now_f = time.time() if now is None else float(now)
+        today = self.daily.get(day_key(now_f))
         if today is None:
             return True, "ok"
         limit = self.max_daily_loss_usd
         if limit > 0 and today.realized_pnl <= -limit:
             return False, "daily-loss-limit"
-        drawdown_limit = self.max_intraday_drawdown_usd
-        if (
-            drawdown_limit > 0
-            and today.peak_pnl - today.realized_pnl >= drawdown_limit - 1e-9
-        ):
+        if self._drawdown_paused(today, now_f):
             return False, "intraday-drawdown"
         return True, "ok"
 
@@ -1771,7 +1820,13 @@ class MultiAssetRunner:
 
     def status_payload(self, now: float | None = None) -> dict[str, Any]:
         now_f = time.time() if now is None else float(now)
-        allowed, reason = self.entries_allowed()
+        allowed, reason = self.entries_allowed(now=now_f)
+        today_stats = self.daily.get(day_key(now_f))
+        pause_until = (
+            today_stats.drawdown_pause_until
+            if today_stats is not None
+            else 0.0
+        )
         window_start = int(now_f) - int(now_f) % int(
             self.settings.general.window_sec
         )
@@ -1788,7 +1843,14 @@ class MultiAssetRunner:
             "max_same_side_per_window": self.max_same_side_per_window,
             "max_daily_loss_usd": self.max_daily_loss_usd,
             "max_intraday_drawdown_usd": self.max_intraday_drawdown_usd,
+            "intraday_drawdown_pause_min": (
+                self.intraday_drawdown_pause_min
+            ),
             "intraday_drawdown_usd": round(self.intraday_drawdown(now_f), 4),
+            "drawdown_pause_until_ts": round(pause_until, 3),
+            "drawdown_pause_remaining_s": round(
+                max(0.0, pause_until - now_f), 1
+            ),
             "max_positions_per_window": self.max_positions_per_window,
             "max_window_notional_usd": self.max_window_notional_usd,
             "window_exposure": {
