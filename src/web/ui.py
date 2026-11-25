@@ -40,7 +40,7 @@ nav .nav-user { color:#9ca3af; }
 .green { color:#10b981; } .red { color:#ef4444; }
 .purple { color:#a78bfa; } .orange { color:#fb923c; } .muted { color:#6b7280; }
 
-.clock-bar { display:flex; align-items:center; gap:22px; flex-wrap:wrap;
+.clock-bar { display:flex; flex-direction:column; gap:10px;
              background:#12122a; border:1px solid #1e1e3a; border-radius:12px;
              padding:12px 18px; margin-bottom:20px; }
 .clock-item { display:flex; align-items:baseline; gap:8px; }
@@ -49,10 +49,19 @@ nav .nav-user { color:#9ca3af; }
 .clock-bar b { font-size:18px; font-weight:700; color:#d1d5db;
                font-variant-numeric:tabular-nums; }
 .clock-sub { font-size:11px; color:#6b7280; font-variant-numeric:tabular-nums; }
-.clock-progress { flex:1 1 180px; min-width:120px; height:6px;
+.clock-sys { padding-bottom:10px; border-bottom:1px solid #1e1e3a; }
+.window-clocks { display:flex; flex-direction:column; gap:10px; }
+.clock-window { display:flex; align-items:center; gap:14px; flex-wrap:wrap; }
+.clock-badge { flex:0 0 46px; text-align:center; font-size:11px; font-weight:700;
+               letter-spacing:.06em; text-transform:uppercase; padding:3px 0;
+               border-radius:4px; background:#1e1b4b; color:#a78bfa; }
+.clock-range { font-size:13px; color:#c9c9d6;
+               font-variant-numeric:tabular-nums; }
+.clock-left { display:flex; align-items:baseline; gap:8px; }
+.clock-progress { flex:1 1 160px; min-width:110px; height:6px;
                   background:#1e1e3a; border-radius:3px; overflow:hidden; }
-#window-fill { height:100%; width:0%; background:#a78bfa;
-               transition:width .25s linear; }
+.clock-fill { height:100%; width:0%; background:#a78bfa;
+              transition:width .25s linear; }
 
 .section { background:#12122a; border:1px solid #1e1e3a; border-radius:10px;
            padding:20px; margin-bottom:24px; }
@@ -228,8 +237,10 @@ footer { text-align:center; color:#4b5563; font-size:12px; padding:20px 0 40px; 
   .stat-card { padding:14px; }
   .stat-value { font-size:21px; }
   .stat-label { font-size:10px; }
-  .clock-bar { gap:12px; padding:10px 14px; }
+  .clock-bar { gap:8px; padding:10px 14px; }
   .clock-bar b { font-size:15px; }
+  .clock-window { gap:8px 10px; }
+  .clock-badge { flex-basis:38px; }
   .timeline-seg { font-size:0; }
   .section { padding:14px; margin-bottom:16px; }
   table { font-size:12px; }

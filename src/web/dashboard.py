@@ -39,12 +39,12 @@ _BODY = r"""
 </div>
 
 <div class="clock-bar">
-  <div class="clock-item">
+  <div class="clock-item clock-sys">
     <span class="clock-label">系统时间 UTC</span>
     <b id="sys-clock">--:--:--</b>
     <span class="clock-sub" id="local-clock">本地 --:--:--</span>
   </div>
-  <div id="window-clocks" style="display:contents"></div>
+  <div id="window-clocks" class="window-clocks"></div>
 </div>
 
 <div class="control-bar">
@@ -112,15 +112,16 @@ function ensureWindowClocks() {
   CLOCK_KEY = key;
   CLOCK_INTERVALS = list;
   $('window-clocks').innerHTML = list.map((it, i) => `
-    <div class="clock-item">
-      <span class="clock-label">${escapeHtml(it.name)} 窗口 本地</span>
-      <b id="win-range-${i}">--:-- – --:--</b>
-    </div>
-    <div class="clock-item">
-      <span class="clock-label">${escapeHtml(it.name)} 本窗剩余</span>
-      <b id="win-left-${i}" class="orange">--:--</b>
-    </div>
-    <div class="clock-progress"><div id="win-fill-${i}"></div></div>`).join('');
+    <div class="clock-window">
+      <span class="clock-badge">${escapeHtml(it.name)}</span>
+      <span class="clock-range"><span class="clock-label">窗口 本地</span>
+        <span id="win-range-${i}">--:--:-- – --:--:--</span></span>
+      <span class="clock-left">
+        <span class="clock-label">本窗剩余</span>
+        <b id="win-left-${i}" class="orange">--:--</b>
+      </span>
+      <div class="clock-progress"><div class="clock-fill" id="win-fill-${i}"></div></div>
+    </div>`).join('');
 }
 
 function tickWindowClock() {
@@ -153,9 +154,32 @@ function tickWindowClock() {
 setInterval(tickWindowClock, 1000);
 tickWindowClock();
 
+const PHASE_ZH = {pre: '盘前', entry: '入场期', tp: '止盈止损', ended: '已结束'};
+const STATUS_ZH = {
+  waiting: '等待', entering: '入场中', holding: '持有中',
+  exiting: '平仓中', closed: '已平仓', settle_pending: '待结算',
+};
+const REASON_ZH = {
+  tp: '止盈', sl: '价格止损', settle: '结算', shutdown: '退出',
+  stop_loss: '旧版止损', time_exit: '旧版时间强平',
+};
+const reasonLabel = (r) => REASON_ZH[String(r || '').toLowerCase()] || (r || '--');
+const zhText = (map, v) => (v ? (map[v] || v) : '--');
+const intervalRank = (a) => {
+  const name = String(a.interval || '').toLowerCase();
+  return name === '5m' ? 0 : (name === '15m' ? 1 : 2);
+};
+
 function renderAssets(s) {
   const rows = [];
-  for (const [market, a] of Object.entries(s.assets || {})) {
+  // Markets switched off in the config page are not listed, unless a
+  // position is still open on them (that must stay visible).
+  const assets = Object.entries(s.assets || {}).filter(
+    ([, a]) => a.enabled || Object.values(a.sides || {}).some((x) => x.position),
+  );
+  // 5m markets first, then 15m; keep the server order within each group.
+  assets.sort(([, a], [, b]) => intervalRank(a) - intervalRank(b));
+  for (const [market, a] of assets) {
     const enabled = !!a.enabled;
     const enabledPill = enabled
       ? '<span class="pill green">启用</span>'
@@ -194,9 +218,9 @@ function renderAssets(s) {
         <td><b>${label}</b>${perfTag}</td>
         <td>${enabledPill}</td>
         <td>${escapeHtml(w.slug || '--')}<br><span class="muted">${utcTime(w.start_ts)}</span></td>
-        <td>${escapeHtml(side.phase || '--')}</td>
+        <td>${escapeHtml(zhText(PHASE_ZH, side.phase))}</td>
         <td>${escapeHtml(sideKey)}</td>
-        <td>${escapeHtml(side.status || '--')}</td>
+        <td>${escapeHtml(zhText(STATUS_ZH, side.status))}</td>
         <td class="num">${fmt(side.mid, 3)}</td>
         <td class="num">${fmt(side.bid, 3)} / ${fmt(side.ask, 3)}</td>
         <td class="num">${fmt(side.entry_thresh, 2)}</td>
@@ -216,7 +240,7 @@ function renderTrades(trades) {
     <td><b>${escapeHtml(r.asset)}</b>
       <span class="pill blue">${escapeHtml(r.interval || '5m')}</span></td>
     <td>${escapeHtml(r.side)}</td>
-    <td>${escapeHtml(r.reason)}</td>
+    <td>${escapeHtml(reasonLabel(r.reason))}</td>
     <td class="num">${fmt(r.entry_price, 3)}</td>
     <td class="num">${fmt(r.exit_price, 3)}</td>
     <td class="num ${cls(r.pnl_net)}">${money(r.pnl_net, 4)}</td>
