@@ -89,6 +89,17 @@ def test_doc_defaults_load():
     assert s.web.enabled is True
 
 
+def test_markets_are_ordered_5m_first_then_15m():
+    s = load_settings()
+    markets = [a.market for a in s.assets]
+    assert markets == [
+        "BTC-5M", "ETH-5M", "BNB-5M", "SOL-5M",
+        "DOGE-5M", "XRP-5M", "HYPE-5M",
+        "BTC-15M", "ETH-15M", "BNB-15M", "SOL-15M",
+        "DOGE-15M", "XRP-15M", "HYPE-15M",
+    ]
+
+
 def test_per_interval_overrides(tmp_path):
     path = tmp_path / "config.toml"
     path.write_text(

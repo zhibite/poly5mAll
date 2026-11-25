@@ -287,6 +287,33 @@ def test_mode_default_persisted_and_live_gate(tmp_path):
         blocked.set_mode("live")
 
 
+def test_partial_update_after_reload_keeps_enum_sides(tmp_path):
+    """A patch without 'sides' must not reparse tuple[Side] as strings."""
+    rt = _runtime(tmp_path)
+    rt.update(
+        {
+            "assets": {
+                "ETH-5M": {
+                    "sides": "DOWN",
+                    "entry_thresh": 0.20,
+                    "tp_pct": 0.30,
+                }
+            }
+        }
+    )
+    rt.update({"assets": {"ETH-5M": {"stop_loss_pct": 0.10}}})
+    eth = rt.asset("ETH-5M")
+    assert eth.sides == (Side.DOWN,)
+    assert eth.entry_thresh == pytest.approx(0.20)
+    assert eth.stop_loss_pct == pytest.approx(0.10)
+
+    reloaded = RuntimeConfig(
+        tmp_path / "runtime_config.json", load_settings().assets
+    )
+    reloaded.update({"assets": {"ETH-5M": {"tp_pct": 0.25}}})
+    assert reloaded.asset("ETH-5M").sides == (Side.DOWN,)
+
+
 def test_partial_update_preserves_other_fields(tmp_path):
     rt = _runtime(tmp_path)
     rt.update(

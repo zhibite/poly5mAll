@@ -907,6 +907,19 @@ def _load_assets(
                     taker_fee_rate=fee,
                 )
             )
+
+    # Display and task order: every 5m market first, then the other
+    # timeframes (15m), preserving the coin order inside each group.
+    interval_rank: dict[str, int] = {"5m": 0}
+    for idx, interval in enumerate(intervals):
+        interval_rank.setdefault(interval.name, idx + 1)
+    coin_rank = {name: idx for idx, name in enumerate(names)}
+    out.sort(
+        key=lambda a: (
+            interval_rank.get(a.interval, 99),
+            coin_rank.get(a.asset, 99),
+        )
+    )
     return out
 
 

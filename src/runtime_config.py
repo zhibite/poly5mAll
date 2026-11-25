@@ -29,7 +29,11 @@ log = get_logger("runtime_config")
 
 def _parse_sides(raw: Any) -> tuple[Side, ...]:
     if isinstance(raw, (list, tuple)):
-        tokens = [str(x).strip().upper() for x in raw]
+        # Existing overrides store tuple[Side, ...]; str(Side.UP) is
+        # "Side.UP" on newer Python versions, so use the enum value.
+        tokens = [
+            str(getattr(x, "value", x)).strip().upper() for x in raw
+        ]
     else:
         text = str(raw or "").replace("+", ",")
         tokens = [x.strip().upper() for x in text.split(",")]
