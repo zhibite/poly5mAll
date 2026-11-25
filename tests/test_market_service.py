@@ -2,18 +2,18 @@ from __future__ import annotations
 
 import pytest
 
-from src.market.service import MarketService
+from src.market.service import MarketService, MarketSpec
 
-T0 = 1_800_000_000
+T0 = 1_800_000_000  # divisible by 300 and 900
 
 
-def _market(start: int, tag: str) -> dict:
+def _market(start: int, tag: str, interval: str = "5m") -> dict:
     return {
         "tokens": [
             {"token_id": f"up-{tag}", "outcome": "Up"},
             {"token_id": f"down-{tag}", "outcome": "Down"},
         ],
-        "_event_slug": f"btc-updown-5m-{start}",
+        "_event_slug": f"btc-updown-{interval}-{start}",
         "_window_start_ts": start,
         "conditionId": f"cond-{tag}",
     }
@@ -23,9 +23,11 @@ class FakePM:
     def __init__(self, markets):
         self.markets = markets
         self.calls = 0
+        self.kwargs = []
 
     async def get_asset_updown_markets(self, asset, **kwargs):
         self.calls += 1
+        self.kwargs.append(kwargs)
         return list(self.markets)
 
 
@@ -40,6 +42,67 @@ class TickPM(FakePM):
     async def get_tick_size(self, token_id, *, timeout_s=3.0, default=0.01):
         self.tick_calls.append(token_id)
         return self.tick if self.tick is not None else default
+
+
+@pytest.mark.asyncio
+async def test_15m_spec_uses_its_slug_interval_and_window():
+    pm = FakePM(
+        [
+            _market(T0, "a15", "15m"),
+            _market(T0 + 900, "b15", "15m"),
+        ]
+    )
+    ms = MarketService(
+        pm,
+        specs=[MarketSpec("BTC-15M", "BTC", "15m", 900)],
+        pre_discovery_lead_s=60,
+        min_discovery_interval_s=0,
+    )
+    await ms.refresh("BTC-15M", T0 + 10)
+    assert pm.kwargs[0]["slug_interval"] == "15m"
+    assert pm.kwargs[0]["window_sec"] == 900
+    cur = ms.current("BTC-15M", T0 + 10)
+    nxt = ms.next("BTC-15M")
+    assert cur is not None and cur.start_ts == T0
+    assert cur.interval == "15m" and cur.end_ts == T0 + 900
+    assert nxt is not None and nxt.start_ts == T0 + 900
+    # A 15m market is invisible to the 5m market key.
+    assert ms.current("BTC-5M", T0 + 10) is None
+
+
+class IntervalPM(FakePM):
+    """Returns the market matching the requested slug interval."""
+
+    async def get_asset_updown_markets(self, asset, **kwargs):
+        self.calls += 1
+        self.kwargs.append(kwargs)
+        if kwargs.get("slug_interval") == "15m":
+            return [_market(T0, "a15", "15m")]
+        return [_market(T0, "a5", "5m")]
+
+
+@pytest.mark.asyncio
+async def test_5m_and_15m_windows_are_tracked_separately():
+    pm = IntervalPM([])
+    ms = MarketService(
+        pm,
+        specs=[
+            MarketSpec("BTC-5M", "BTC", "5m", 300),
+            MarketSpec("BTC-15M", "BTC", "15m", 900),
+        ],
+        pre_discovery_lead_s=60,
+        min_discovery_interval_s=0,
+    )
+    await ms.refresh("BTC-5M", T0 + 10)
+    await ms.refresh("BTC-15M", T0 + 10)
+    assert ms.current("BTC-5M", T0 + 10).window_sec == 300
+    assert ms.current("BTC-15M", T0 + 10).window_sec == 900
+    assert ms.poll_tokens(markets={"BTC-15M"}, now=T0 + 10) == {
+        "up-a15", "down-a15",
+    }
+    assert ms.poll_tokens(markets={"BTC-5M"}, now=T0 + 10) == {
+        "up-a5", "down-a5",
+    }
 
 
 @pytest.mark.asyncio

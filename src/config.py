@@ -42,13 +42,28 @@ ASSET_DEFAULTS: dict[str, tuple[str, float, float]] = {
 # The doc's asset order, used when TRADE_ASSETS is not set.
 DEFAULT_ASSET_ORDER = ("BTC", "ETH", "BNB", "SOL", "DOGE", "XRP", "HYPE")
 
-# Official Polymarket taker fee rates for 5m crypto markets
+# Supported market timeframes: name -> (window seconds, entry window end).
+# 5m markets enter in the first 60 s; 15m markets in the first 3 minutes.
+INTERVAL_DEFAULTS: dict[str, tuple[int, float]] = {
+    "5m": (300, 60.0),
+    "15m": (900, 180.0),
+}
+DEFAULT_INTERVALS = ("5m", "15m")
+# 15m is opt-in: its backtest was not good enough to run by default.  The
+# market still exists in the config page and can be enabled per coin, or
+# with TRADE_INTERVALS=15m (which makes the selected timeframe the default).
+INTERVAL_DEFAULT_ENABLED: dict[str, bool] = {
+    "5m": True,
+    "15m": False,
+}
+
+# Official Polymarket taker fee rates for crypto markets
 # (fee = shares * rate * p * (1 - p)): BTC is 5%, everything else is 1%.
 # Used only when neither config.toml nor the environment sets a rate.
 ASSET_DEFAULT_FEE_RATE: dict[str, float] = {"BTC": 0.05}
 
-# Price stop-loss retired: all assets default to 0 (off).  The 240s
-# time-based forced exit is the only stop-like exit.
+# Price stop defaults: 0 = off.  TP and the optional price stop are the
+# only exits apart from Gamma settlement at the window close.
 ASSET_DEFAULT_STOP_LOSS: dict[str, float] = {
     "BTC": 0.0,
     "ETH": 0.0,
@@ -141,12 +156,20 @@ def _as_float(value: Any, default: float) -> float:
 
 
 @dataclass(frozen=True)
+class IntervalConfig:
+    """One market timeframe (5m / 15m)."""
+
+    name: str
+    window_sec: int
+    entry_window_end_s: float
+
+    @property
+    def key(self) -> str:
+        return self.name.upper()
+
+
+@dataclass(frozen=True)
 class GeneralConfig:
-    window_sec: int = 300
-    entry_window_end_s: float = 60.0
-    tp_window_start_s: float = 60.0
-    force_exit_s: float = 240.0
-    force_exit_deadline_s: float = 295.0
     tick_s: float = 0.25
 
 
@@ -172,9 +195,9 @@ class ExecutionConfig:
     paper_trading: bool = True
     live_enabled: bool = False
     stake_usd: float = 2.0
-    # Default taker fee rate for assets without a per-asset override.
-    # Polymarket charges 0.05 on BTC 5m markets and 0.01 on the other
-    # crypto 5m markets; see [ASSETS.<NAME>] TAKER_FEE_RATE.
+    # Default taker fee rate for markets without an override.  Polymarket
+    # charges 0.05 on BTC markets and 0.01 on the other crypto markets;
+    # see [ASSETS.<NAME>] TAKER_FEE_RATE and per-interval overrides.
     taker_fee_rate: float = 0.01
     include_fees: bool = True
     # "observed": trigger on executable bid >= target; FAK sell at target
@@ -191,28 +214,37 @@ class ExecutionConfig:
     require_two_sided_book: bool = True
     min_entry_bid_depth_usd: float = 5.0
     # Max concurrent open positions with the same side (UP or DOWN) across
-    # all assets.  0 disables the cap.
+    # all markets.  0 disables the cap.
     max_same_side_positions: int = 6
-    # Max same-side entries inside one 5m window, across all assets.  The
-    # crypto 5m markets are highly correlated, so several UP entries in one
-    # window are effectively one leveraged bet.  0 disables the cap.
+    # Global concurrent exposure across BOTH timeframes, both sides and all
+    # markets.  Open positions plus in-flight entries count.  0 disables
+    # the corresponding cap.  This is the aggregate guard on top of the
+    # per-window caps below.
+    max_open_positions: int = 6
+    max_open_notional_usd: float = 10.0
+    # Max same-side entries inside one market window, across all markets
+    # on that timeframe.  Crypto markets are highly correlated, so several
+    # UP entries in one window are effectively one leveraged bet.  0
+    # disables the cap.
     max_same_side_per_window: int = 2
     entry_retry_s: float = 1.0
     exit_retry_s: float = 1.0
     slippage_pct: float = 2.0
     max_spread_abs: float = 0.0
     # Stop opening new positions once the UTC day's realized net PnL is at
-    # or below -MAX_DAILY_LOSS_USD.  0 disables the cap.
-    max_daily_loss_usd: float = 20.0
+    # or below -MAX_DAILY_LOSS_USD.  0 disables the cap.  Scaled for the
+    # 12-market (5m + 15m) deployment.
+    max_daily_loss_usd: float = 40.0
     # Pause new entries when the UTC day's realized PnL falls this far
     # below its intraday high-water mark.  0 disables the pause.
-    max_intraday_drawdown_usd: float = 8.0
+    max_intraday_drawdown_usd: float = 16.0
     # Cooldown after a drawdown pause before entries resume.  When it
     # expires the day's drawdown anchor is rebased to the current PnL, so
     # a further pause needs a fresh drawdown of the same size.
     # 0 disables the drawdown pause.
     intraday_drawdown_pause_min: float = 60.0
-    # Total exposure per 5m window across BOTH sides and all assets.
+    # Total exposure per market window across BOTH sides and all markets
+    # on that timeframe; 5m and 15m windows are counted separately.
     # 0 disables the corresponding cap.
     max_positions_per_window: int = 3
     max_window_notional_usd: float = 6.0
@@ -264,23 +296,36 @@ class WebConfig:
 
 @dataclass(frozen=True)
 class AssetConfig:
+    """One tradable market: a coin on one timeframe (e.g. ETH-15M)."""
+
     asset: str
     enabled: bool
     sides: tuple[Side, ...]
     entry_thresh: float
     tp_pct: float
     stake_usd: float | None = None
-    stop_loss_pct: float = 0.20
-    # Per-asset forced-exit timing (seconds into the 5m window).  Defaults
-    # to [GENERAL] FORCE_EXIT_S / FORCE_EXIT_DEADLINE_S; the web config
-    # page can override it per coin.  When only FORCE_EXIT_S is set the
-    # deadline defaults to min(global deadline, force + 15s).
-    force_exit_s: float = 240.0
-    force_exit_deadline_s: float = 295.0
-    # Official taker fee rate for this asset's 5m market (BTC = 0.05,
-    # everything else = 0.01).  Resolved from [ASSETS.<NAME>] TAKER_FEE_RATE,
-    # falling back to [EXECUTION] TAKER_FEE_RATE.
+    # Price stop as a fraction below the actual fill price (0 = off).
+    # Armed at entry time, like the take-profit target.
+    stop_loss_pct: float = 0.0
+    # Market timeframe and its timing.  There is no forced time exit:
+    # TP/SL run from the fill until the window closes, then any remainder
+    # settles at the Gamma 0/1 outcome.
+    interval: str = "5m"
+    window_sec: int = 300
+    entry_window_end_s: float = 60.0
+    # Official taker fee rate for this market (BTC = 0.05, everything else
+    # = 0.01).  Resolved from [ASSETS.<NAME>] TAKER_FEE_RATE or the
+    # per-interval sub-table, falling back to [EXECUTION] TAKER_FEE_RATE.
     taker_fee_rate: float = 0.01
+
+    @property
+    def market(self) -> str:
+        """Market id, e.g. ``ETH-5M`` / ``ETH-15M``."""
+        return f"{self.asset}-{self.interval.upper()}"
+
+    @property
+    def label(self) -> str:
+        return f"{self.asset} {self.interval}"
 
     def plans(self, default_stake: float) -> list[SidePlan]:
         stake = float(self.stake_usd or default_stake)
@@ -291,9 +336,11 @@ class AssetConfig:
                 entry_thresh=float(self.entry_thresh),
                 tp_pct=float(self.tp_pct),
                 stake_usd=stake,
+                market=self.market,
+                interval=self.interval,
+                window_sec=int(self.window_sec),
+                entry_window_end_s=float(self.entry_window_end_s),
                 stop_loss_pct=float(self.stop_loss_pct),
-                force_exit_s=float(self.force_exit_s),
-                force_exit_deadline_s=float(self.force_exit_deadline_s),
                 taker_fee_rate=float(self.taker_fee_rate),
             )
             for side in self.sides
@@ -323,7 +370,9 @@ class Settings:
     feed: FeedConfig
     execution: ExecutionConfig
     storage: StorageConfig
+    # One AssetConfig per market (coin × timeframe), 12 by default.
     assets: tuple[AssetConfig, ...]
+    intervals: tuple[IntervalConfig, ...]
     credentials: Credentials
     web: WebConfig
     log_level: str = "INFO"
@@ -361,10 +410,21 @@ class Settings:
             out.extend(asset.plans(self.execution.stake_usd))
         return out
 
+    def interval(self, name: str) -> IntervalConfig | None:
+        name = str(name).strip().lower()
+        for interval in self.intervals:
+            if interval.name == name:
+                return interval
+        return None
+
     def asset(self, name: str) -> AssetConfig | None:
-        name = name.upper()
+        """Look up a market by id ("ETH-15M") or a coin ("ETH" -> 5m)."""
+        wanted = str(name).strip().upper()
         for asset in self.assets:
-            if asset.asset == name:
+            if asset.market.upper() == wanted:
+                return asset
+        for asset in self.assets:
+            if asset.asset.upper() == wanted and asset.interval == "5m":
                 return asset
         return None
 
@@ -421,19 +481,9 @@ def load_settings(config_path: str | Path | None = None) -> Settings:
     log_raw = _section(raw, "LOG")
 
     general = GeneralConfig(
-        window_sec=int(_as_float(_get(general_raw, "WINDOW_SEC", 300), 300)),
-        entry_window_end_s=_as_float(
-            _get(general_raw, "ENTRY_WINDOW_END_S", 60.0), 60.0
-        ),
-        tp_window_start_s=_as_float(
-            _get(general_raw, "TP_WINDOW_START_S", 60.0), 60.0
-        ),
-        force_exit_s=_as_float(_get(general_raw, "FORCE_EXIT_S", 240.0), 240.0),
-        force_exit_deadline_s=_as_float(
-            _get(general_raw, "FORCE_EXIT_DEADLINE_S", 295.0), 295.0
-        ),
         tick_s=_as_float(_get(general_raw, "TICK_S", 0.25), 0.25),
     )
+    intervals = _load_intervals(raw)
 
     feed = FeedConfig(
         use_ws=_as_bool(_get(feed_raw, "USE_WS", True), True),
@@ -509,6 +559,20 @@ def load_settings(config_path: str | Path | None = None) -> Settings:
                 )
             ),
         ),
+        max_open_positions=_env_int(
+            "MAX_OPEN_POSITIONS",
+            int(
+                _as_float(
+                    _get(exec_raw, "MAX_OPEN_POSITIONS", 6), 6
+                )
+            ),
+        ),
+        max_open_notional_usd=_env_float(
+            "MAX_OPEN_NOTIONAL_USD",
+            _as_float(
+                _get(exec_raw, "MAX_OPEN_NOTIONAL_USD", 10.0), 10.0
+            ),
+        ),
         max_same_side_per_window=_env_int(
             "MAX_SAME_SIDE_PER_WINDOW",
             int(
@@ -526,12 +590,12 @@ def load_settings(config_path: str | Path | None = None) -> Settings:
         ),
         max_daily_loss_usd=_env_float(
             "MAX_DAILY_LOSS_USD",
-            _as_float(_get(exec_raw, "MAX_DAILY_LOSS_USD", 20.0), 20.0),
+            _as_float(_get(exec_raw, "MAX_DAILY_LOSS_USD", 40.0), 40.0),
         ),
         max_intraday_drawdown_usd=_env_float(
             "MAX_INTRADAY_DRAWDOWN_USD",
             _as_float(
-                _get(exec_raw, "MAX_INTRADAY_DRAWDOWN_USD", 8.0), 8.0
+                _get(exec_raw, "MAX_INTRADAY_DRAWDOWN_USD", 16.0), 16.0
             ),
         ),
         intraday_drawdown_pause_min=_env_float(
@@ -606,7 +670,7 @@ def load_settings(config_path: str | Path | None = None) -> Settings:
         "LOG_LEVEL", str(_get(log_raw, "LEVEL", "INFO"))
     ).upper()
 
-    assets = _load_assets(raw, execution, general)
+    assets = _load_assets(raw, execution, intervals)
     credentials = _load_credentials()
 
     settings = Settings(
@@ -615,6 +679,7 @@ def load_settings(config_path: str | Path | None = None) -> Settings:
         execution=execution,
         storage=storage,
         assets=tuple(assets),
+        intervals=intervals,
         credentials=credentials,
         web=web,
         log_level=log_level,
@@ -624,18 +689,98 @@ def load_settings(config_path: str | Path | None = None) -> Settings:
     return settings
 
 
+def _load_intervals(raw: dict[str, Any]) -> tuple[IntervalConfig, ...]:
+    """Load the market timeframes (5m, 15m) and their windows."""
+    intervals_raw = _section(raw, "INTERVALS")
+    names = [str(k).strip().lower() for k in intervals_raw.keys()]
+    if not names:
+        names = list(DEFAULT_INTERVALS)
+    else:
+        for name in DEFAULT_INTERVALS:
+            if name not in names:
+                names.append(name)
+
+    # TRADE_INTERVALS selects a subset/order, e.g. TRADE_INTERVALS=15m.
+    env = _env("TRADE_INTERVALS")
+    if env:
+        wanted = [x.strip().lower() for x in env.split(",") if x.strip()]
+        if not wanted:
+            raise ConfigError("TRADE_INTERVALS must not be empty")
+        known = set(names) | set(INTERVAL_DEFAULTS)
+        unknown = [n for n in wanted if n not in known]
+        if unknown:
+            raise ConfigError(
+                "TRADE_INTERVALS contains unknown interval(s): "
+                + ",".join(unknown)
+            )
+        names = wanted
+
+    out: list[IntervalConfig] = []
+    for name in names:
+        default_window, default_entry = INTERVAL_DEFAULTS.get(
+            name, (300, 60.0)
+        )
+        table = _section(intervals_raw, name)
+        window = int(
+            _as_float(
+                _get(table, "WINDOW_SEC", default_window), default_window
+            )
+        )
+        entry = _as_float(
+            _get(table, "ENTRY_WINDOW_END_S", default_entry), default_entry
+        )
+        out.append(
+            IntervalConfig(
+                name=name,
+                window_sec=window,
+                entry_window_end_s=entry,
+            )
+        )
+    return tuple(out)
+
+
+def _stake_value(
+    table: dict[str, Any], name: str, *, market: str = ""
+) -> float | None:
+    """STAKE_USD from the market/coin table with env overrides."""
+    env_name = f"{name}_{market}_STAKE_USD" if market else f"{name}_STAKE_USD"
+    raw_env = _env(env_name)
+    if raw_env:
+        try:
+            return float(raw_env)
+        except ValueError as exc:
+            raise ConfigError(
+                f"{env_name} must be a number, got {raw_env!r}"
+            ) from exc
+    raw = _get(table, "STAKE_USD", None)
+    if raw is None:
+        return None
+    try:
+        return float(raw)
+    except (TypeError, ValueError) as exc:
+        raise ConfigError(
+            f"{name}: STAKE_USD must be a number, got {raw!r}"
+        ) from exc
+
+
 def _load_assets(
     raw: dict[str, Any],
     execution: ExecutionConfig,
-    general: GeneralConfig,
+    intervals: tuple[IntervalConfig, ...],
 ) -> list[AssetConfig]:
+    """Expand the coin-level [ASSETS.X] tables into one config per market.
+
+    Coin-level values (entry/TP/SL/sides/stake/fee) are defaults for both
+    timeframes.  ``[ASSETS.ETH.15M]`` may override any of them for that
+    market; the web config page persists the same per-market values.
+    """
     assets_raw = _section(raw, "ASSETS")
     names = [str(k).upper() for k in assets_raw.keys()]
     for name in ASSET_DEFAULTS:
         if name not in names:
             names.append(name)
 
-    # TRADE_ASSETS selects and orders the universe.
+    # TRADE_ASSETS selects and orders the coin universe.
     trade_env = _env("TRADE_ASSETS")
     if trade_env:
         wanted = [x.strip().upper() for x in trade_env.split(",") if x.strip()]
@@ -652,90 +797,116 @@ def _load_assets(
         default_sides, default_entry, default_tp = ASSET_DEFAULTS.get(
             name, ("BOTH", 0.20, 0.10)
         )
-        sides_raw = _env(
-            f"{name}_SIDES", str(_get(table, "SIDES", default_sides))
-        ).upper()
-        sides = _parse_sides(sides_raw)
         # Fallback when config.toml is absent: the six non-BTC assets are
         # on, BTC stays off (its 5% taker fee is not covered by the
         # 0.25/10% TP over the 6-month recheck).
         default_enabled = name != "BTC"
-        enabled = _env_bool(
-            f"{name}_ENABLED",
-            _as_bool(_get(table, "ENABLED", default_enabled), default_enabled),
-        )
-        entry = _env_float(
-            f"{name}_ENTRY_THRESH",
-            _as_float(_get(table, "ENTRY_THRESH", default_entry), default_entry),
-        )
-        tp = _env_float(
-            f"{name}_TP_PCT",
-            _as_float(_get(table, "TP_PCT", default_tp), default_tp),
-        )
-        # Per-asset official fee rate.  The built-in schedule covers BTC
-        # even without config.toml; [EXECUTION] TAKER_FEE_RATE is the
-        # fallback for every asset without its own default/override.
-        fee_default = ASSET_DEFAULT_FEE_RATE.get(
-            name, execution.taker_fee_rate
-        )
-        fee = _env_float(
-            f"{name}_TAKER_FEE_RATE",
-            _as_float(_get(table, "TAKER_FEE_RATE", fee_default), fee_default),
-        )
-        stake_raw = _env(f"{name}_STAKE_USD")
-        stake = _get(table, "STAKE_USD", None)
-        if stake_raw:
-            try:
-                stake = float(stake_raw)
-            except ValueError as exc:
-                raise ConfigError(
-                    f"{name}_STAKE_USD must be a number, got {stake_raw!r}"
-                ) from exc
-        if stake is not None:
-            stake = float(stake)
         sl_default = ASSET_DEFAULT_STOP_LOSS.get(
             name, execution.stop_loss_pct
         )
-        sl = _env_float(
+        fee_default = ASSET_DEFAULT_FEE_RATE.get(
+            name, execution.taker_fee_rate
+        )
+
+        coin_enabled = _env_bool(
+            f"{name}_ENABLED",
+            _as_bool(_get(table, "ENABLED", default_enabled), default_enabled),
+        )
+        coin_sides_raw = _env(
+            f"{name}_SIDES", str(_get(table, "SIDES", default_sides))
+        )
+        coin_entry = _env_float(
+            f"{name}_ENTRY_THRESH",
+            _as_float(_get(table, "ENTRY_THRESH", default_entry), default_entry),
+        )
+        coin_tp = _env_float(
+            f"{name}_TP_PCT",
+            _as_float(_get(table, "TP_PCT", default_tp), default_tp),
+        )
+        coin_sl = _env_float(
             f"{name}_STOP_LOSS_PCT",
             _as_float(_get(table, "STOP_LOSS_PCT", sl_default), sl_default),
         )
-        # Optional per-asset forced-exit timing.  The global [GENERAL]
-        # values are the default; a per-asset FORCE_EXIT_S without an
-        # explicit deadline gets a short retry window instead of
-        # inheriting the global 295 s.
-        force = general.force_exit_s
-        force_raw = _get(table, "FORCE_EXIT_S", None)
-        force_env = _env(f"{name}_FORCE_EXIT_S")
-        if force_env or force_raw is not None:
-            force = _env_float(
-                f"{name}_FORCE_EXIT_S",
-                _as_float(force_raw, general.force_exit_s),
-            )
-        deadline = general.force_exit_deadline_s
-        deadline_raw = _get(table, "FORCE_EXIT_DEADLINE_S", None)
-        deadline_env = _env(f"{name}_FORCE_EXIT_DEADLINE_S")
-        if deadline_env or deadline_raw is not None:
-            deadline = _env_float(
-                f"{name}_FORCE_EXIT_DEADLINE_S",
-                _as_float(deadline_raw, general.force_exit_deadline_s),
-            )
-        elif force != general.force_exit_s:
-            deadline = min(general.force_exit_deadline_s, force + 15.0)
-        out.append(
-            AssetConfig(
-                asset=name,
-                enabled=enabled,
-                sides=sides,
-                entry_thresh=entry,
-                tp_pct=tp,
-                stake_usd=stake,
-                stop_loss_pct=sl,
-                force_exit_s=force,
-                force_exit_deadline_s=deadline,
-                taker_fee_rate=fee,
-            )
+        coin_fee = _env_float(
+            f"{name}_TAKER_FEE_RATE",
+            _as_float(_get(table, "TAKER_FEE_RATE", fee_default), fee_default),
         )
+        coin_stake = _stake_value(table, name)
+
+        # When TRADE_INTERVALS selects a single timeframe, that timeframe is
+        # the default for the selected coins; otherwise 5m is on and 15m
+        # is opt-in (see INTERVAL_DEFAULT_ENABLED).
+        only_interval = len(intervals) == 1
+        for interval in intervals:
+            sub = _section(table, interval.name)
+            mk = interval.key  # "5M" / "15M"
+            market = f"{name}-{mk}"
+            interval_default = bool(
+                coin_enabled
+                and (
+                    only_interval
+                    or INTERVAL_DEFAULT_ENABLED.get(interval.name, False)
+                )
+            )
+
+            enabled = _env_bool(
+                f"{name}_{mk}_ENABLED",
+                _as_bool(
+                    _get(sub, "ENABLED", interval_default),
+                    interval_default,
+                ),
+            )
+            sides_raw = _env(
+                f"{name}_{mk}_SIDES",
+                str(_get(sub, "SIDES", coin_sides_raw)),
+            ).upper()
+            sides = _parse_sides(sides_raw)
+            entry = _env_float(
+                f"{name}_{mk}_ENTRY_THRESH",
+                _as_float(_get(sub, "ENTRY_THRESH", coin_entry), coin_entry),
+            )
+            tp = _env_float(
+                f"{name}_{mk}_TP_PCT",
+                _as_float(_get(sub, "TP_PCT", coin_tp), coin_tp),
+            )
+            sl = _env_float(
+                f"{name}_{mk}_STOP_LOSS_PCT",
+                _as_float(_get(sub, "STOP_LOSS_PCT", coin_sl), coin_sl),
+            )
+            fee = _env_float(
+                f"{name}_{mk}_TAKER_FEE_RATE",
+                _as_float(
+                    _get(sub, "TAKER_FEE_RATE", coin_fee), coin_fee
+                ),
+            )
+            stake = coin_stake
+            if "STAKE_USD" in sub:
+                stake = _stake_value(sub, name)
+            market_stake = _env(f"{name}_{mk}_STAKE_USD")
+            if market_stake:
+                try:
+                    stake = float(market_stake)
+                except ValueError as exc:
+                    raise ConfigError(
+                        f"{name}_{mk}_STAKE_USD must be a number, "
+                        f"got {market_stake!r}"
+                    ) from exc
+
+            out.append(
+                AssetConfig(
+                    asset=name,
+                    enabled=enabled,
+                    sides=sides,
+                    entry_thresh=entry,
+                    tp_pct=tp,
+                    stake_usd=stake,
+                    stop_loss_pct=sl,
+                    interval=interval.name,
+                    window_sec=int(interval.window_sec),
+                    entry_window_end_s=float(interval.entry_window_end_s),
+                    taker_fee_rate=fee,
+                )
+            )
     return out
 
 
@@ -824,20 +995,24 @@ def validate_settings(settings: Settings) -> None:
     g = settings.general
     e = settings.execution
 
-    if g.window_sec != 300:
-        raise ConfigError(
-            f"WINDOW_SEC must be 300 for the 5m strategy (got {g.window_sec})"
-        )
-    if not (0 < g.entry_window_end_s <= g.window_sec):
-        raise ConfigError("ENTRY_WINDOW_END_S must be in (0, WINDOW_SEC]")
-    if not (g.entry_window_end_s <= g.tp_window_start_s < g.window_sec):
-        raise ConfigError("TP_WINDOW_START_S must be in [ENTRY_WINDOW_END_S, WINDOW_SEC)")
-    if not (g.tp_window_start_s < g.force_exit_s <= g.force_exit_deadline_s < g.window_sec):
-        raise ConfigError(
-            "need TP_WINDOW_START_S < FORCE_EXIT_S <= FORCE_EXIT_DEADLINE_S < WINDOW_SEC"
-        )
-    if g.force_exit_deadline_s >= g.window_sec:
-        raise ConfigError("FORCE_EXIT_DEADLINE_S must leave a settlement margin")
+    if not settings.intervals:
+        raise ConfigError("no market intervals configured")
+    seen_intervals: set[str] = set()
+    for interval in settings.intervals:
+        if not interval.name:
+            raise ConfigError("interval name must not be empty")
+        if interval.name in seen_intervals:
+            raise ConfigError(f"duplicate interval {interval.name}")
+        seen_intervals.add(interval.name)
+        if interval.window_sec <= 0:
+            raise ConfigError(
+                f"{interval.name}: WINDOW_SEC must be > 0"
+            )
+        if not (0 < interval.entry_window_end_s <= interval.window_sec):
+            raise ConfigError(
+                f"{interval.name}: ENTRY_WINDOW_END_S must be in "
+                "(0, WINDOW_SEC]"
+            )
     if not (0.01 <= g.tick_s <= 2.0):
         raise ConfigError("TICK_S must be in [0.01, 2.0]")
 
@@ -860,6 +1035,10 @@ def validate_settings(settings: Settings) -> None:
         raise ConfigError("MIN_ENTRY_BID_DEPTH_USD must be >= 0")
     if e.max_same_side_positions < 0:
         raise ConfigError("MAX_SAME_SIDE_POSITIONS must be >= 0")
+    if e.max_open_positions < 0:
+        raise ConfigError("MAX_OPEN_POSITIONS must be >= 0")
+    if e.max_open_notional_usd < 0:
+        raise ConfigError("MAX_OPEN_NOTIONAL_USD must be >= 0")
     if e.max_same_side_per_window < 0:
         raise ConfigError("MAX_SAME_SIDE_PER_WINDOW must be >= 0")
     if settings.feed.ws_shards < 1:
@@ -898,39 +1077,40 @@ def validate_settings(settings: Settings) -> None:
         raise ConfigError("all assets are disabled")
     seen: set[str] = set()
     for asset in settings.assets:
-        if asset.asset in seen:
-            raise ConfigError(f"duplicate asset {asset.asset}")
-        seen.add(asset.asset)
+        name = asset.market
+        if name in seen:
+            raise ConfigError(f"duplicate market {name}")
+        seen.add(name)
         if not asset.sides:
-            raise ConfigError(f"{asset.asset}: SIDES is empty")
+            raise ConfigError(f"{name}: SIDES is empty")
         if not (0.0 < asset.entry_thresh < 1.0):
             raise ConfigError(
-                f"{asset.asset}: ENTRY_THRESH must be in (0, 1), "
+                f"{name}: ENTRY_THRESH must be in (0, 1), "
                 f"got {asset.entry_thresh}"
             )
         if asset.tp_pct <= 0:
-            raise ConfigError(f"{asset.asset}: TP_PCT must be > 0")
+            raise ConfigError(f"{name}: TP_PCT must be > 0")
         if asset.entry_thresh * (1.0 + asset.tp_pct) >= 1.0:
             raise ConfigError(
-                f"{asset.asset}: ENTRY_THRESH * (1 + TP_PCT) must be < 1"
+                f"{name}: ENTRY_THRESH * (1 + TP_PCT) must be < 1"
             )
         if asset.stake_usd is not None and asset.stake_usd <= 0:
-            raise ConfigError(f"{asset.asset}: STAKE_USD must be > 0")
+            raise ConfigError(f"{name}: STAKE_USD must be > 0")
         if not (0.0 <= asset.stop_loss_pct < 1.0):
-            raise ConfigError(f"{asset.asset}: STOP_LOSS_PCT must be in [0, 1)")
-        if not (
-            g.tp_window_start_s
-            < asset.force_exit_s
-            <= asset.force_exit_deadline_s
-            < g.window_sec
-        ):
-            raise ConfigError(
-                f"{asset.asset}: need TP_WINDOW_START_S < FORCE_EXIT_S "
-                "<= FORCE_EXIT_DEADLINE_S < WINDOW_SEC"
-            )
+            raise ConfigError(f"{name}: STOP_LOSS_PCT must be in [0, 1)")
         if not (0.0 <= asset.taker_fee_rate < 1.0):
             raise ConfigError(
-                f"{asset.asset}: TAKER_FEE_RATE must be in [0, 1)"
+                f"{name}: TAKER_FEE_RATE must be in [0, 1)"
+            )
+        if asset.interval not in seen_intervals:
+            raise ConfigError(
+                f"{name}: interval {asset.interval!r} is not configured"
+            )
+        if asset.window_sec <= 0:
+            raise ConfigError(f"{name}: WINDOW_SEC must be > 0")
+        if not (0 < asset.entry_window_end_s <= asset.window_sec):
+            raise ConfigError(
+                f"{name}: ENTRY_WINDOW_END_S must be in (0, WINDOW_SEC]"
             )
 
 
@@ -953,18 +1133,22 @@ def describe(settings: Settings) -> str:
     """A compact multi-line summary used by --check and the startup log."""
     e = settings.execution
     lines = [
-        f"mode={settings.mode}  assets={','.join(a.asset for a in settings.assets if a.enabled)}",
-        f"window={settings.general.window_sec}s  entry<= {settings.general.entry_window_end_s:g}s  "
-        f"tp=[{settings.general.tp_window_start_s:g},{settings.general.force_exit_s:g}]s  "
-        f"force_exit>={settings.general.force_exit_s:g}s",
+        f"mode={settings.mode}  markets={','.join(a.market for a in settings.assets if a.enabled)}",
+        "intervals: "
+        + "  ".join(
+            f"{i.name}={i.window_sec}s entry<={i.entry_window_end_s:g}s"
+            for i in settings.intervals
+        ),
         f"stake={e.stake_usd:g}U  fee_rate_default={e.taker_fee_rate:g}  "
         f"include_fees={e.include_fees}",
         (
             f"risk: daily_loss<={e.max_daily_loss_usd:g}U  "
             f"drawdown<={e.max_intraday_drawdown_usd:g}U/"
             f"{e.intraday_drawdown_pause_min:g}min  "
+            f"open<={e.max_open_positions}pos/"
+            f"{e.max_open_notional_usd:g}U (all markets)  "
             f"window<={e.max_positions_per_window}pos/"
-            f"{e.max_window_notional_usd:g}U  "
+            f"{e.max_window_notional_usd:g}U (per market window)  "
             f"asset_perf={e.asset_perf_lookback_days:g}d"
         ),
         (
@@ -972,15 +1156,19 @@ def describe(settings: Settings) -> str:
             f"enabled={settings.web.enabled} "
             f"auth={'on' if settings.web.auth_enabled else 'off'}"
         ),
+        "exits: TP/SL armed at the fill; no forced time exit; "
+        "the remainder settles at the Gamma outcome",
     ]
     for asset in settings.assets:
         sides = "+".join(s.value for s in asset.sides)
         stake = asset.stake_usd or e.stake_usd
         flag = "" if asset.enabled else "  [off]"
         lines.append(
-            f"  {asset.asset:5} {sides:9} entry<={asset.entry_thresh:.2f}  "
-            f"tp={asset.tp_pct*100:.0f}%  fee={asset.taker_fee_rate:g}  "
-            f"stake={stake:g}U  force={asset.force_exit_s:g}-"
-            f"{asset.force_exit_deadline_s:g}s{flag}"
+            f"  {asset.market:8} {sides:9} entry<={asset.entry_thresh:.2f}  "
+            f"tp={asset.tp_pct*100:.0f}%  "
+            f"sl={asset.stop_loss_pct*100:.0f}%  "
+            f"fee={asset.taker_fee_rate:g}  "
+            f"stake={stake:g}U  window={asset.window_sec}s"
+            f" entry<={asset.entry_window_end_s:g}s{flag}"
         )
     return "\n".join(lines)

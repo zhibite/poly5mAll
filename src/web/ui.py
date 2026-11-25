@@ -271,7 +271,7 @@ _TEMPLATE = """<!doctype html>
 <div class="container">
 __BODY__
 </div>
-<footer>Poly5m All · 7 币 5m Rebound · 后端 8033 · 表格时间按浏览器时区 · 统计按 UTC 日</footer>
+<footer>Poly5m All · 6 币 5m/15m Rebound · 后端 8033 · 表格时间按浏览器时区 · 统计按 UTC 日</footer>
 <script>
 const $ = (id) => document.getElementById(id);
 const fmt = (v, d = 2) => (v === null || v === undefined || isNaN(Number(v)))
@@ -391,7 +391,7 @@ _LOGIN_TEMPLATE = """<!doctype html>
 <div class="login-wrap">
   <div class="login-card">
     <div class="login-brand">Poly5m</div>
-    <div class="login-sub">7 币 5m 策略控制台</div>
+    <div class="login-sub">6 币 5m/15m 策略控制台</div>
     <div id="alert-box"></div>
     <form id="login-form" autocomplete="on">
       <label class="login-field">用户名

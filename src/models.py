@@ -37,10 +37,9 @@ class Side(str, Enum):
 
 class Phase(str, Enum):
     PRE = "pre"                 # before the window opened
-    ENTRY = "entry"             # 0–60 s: observe and buy on first touch
-    TP = "tp"                   # 60–240 s: take profit only
-    FORCE_EXIT = "force_exit"   # 240–295 s: sell at market
-    ENDED = "ended"             # >295 s: give up on the market order
+    ENTRY = "entry"             # first 60 s (5m) / 180 s (15m): buy on touch
+    TP = "tp"                   # from the fill to the window end: TP/SL
+    ENDED = "ended"             # window closed; wait for Gamma settlement
 
 
 class SideStatus(str, Enum):
@@ -54,7 +53,7 @@ class SideStatus(str, Enum):
 
 @dataclass(frozen=True)
 class MarketWindow:
-    """One 5m Up/Down market."""
+    """One Up/Down market window (5m or 15m)."""
 
     asset: str
     slug: str
@@ -62,6 +61,9 @@ class MarketWindow:
     end_ts: int
     up_token: str
     down_token: str
+    # Timeframe label ("5m" / "15m").  The slug carries it, and the
+    # strategy uses it for position ids and settlement fallbacks.
+    interval: str = "5m"
     # Newer ("v2") markets sign against Exchange V3 and are addressed by
     # position id; legacy markets (BTC/ETH) leave these empty and use the
     # clob token ids above.
@@ -80,6 +82,20 @@ class MarketWindow:
 
     def seconds_since(self, now: float) -> float:
         return float(now) - float(self.start_ts)
+
+    @property
+    def window_sec(self) -> int:
+        return int(self.end_ts) - int(self.start_ts)
+
+    @property
+    def key(self) -> tuple[int, int]:
+        """(window seconds, start ts): identifies one window across 5m/15m.
+
+        The 12 markets run on two grids; a 5m and a 15m window can share
+        the same start timestamp but are different windows for the
+        per-window exposure caps.
+        """
+        return (self.window_sec, int(self.start_ts))
 
     def contains(self, now: float) -> bool:
         return self.start_ts <= now < self.end_ts
@@ -151,6 +167,9 @@ class Position:
     tp_price: float
     sl_price: float = 0.0      # 0 = price stop disabled
     stake_usd: float = 0.0
+    # Market timeframe ("5m" / "15m").  State files written before 15m
+    # support have no field and are treated as 5m.
+    interval: str = "5m"
     up_token: str = ""
     down_token: str = ""
     # Exchange V3 position id used to sign live SELLs on v2 markets.
@@ -179,6 +198,19 @@ class Position:
     entry_quote_ts: float = 0.0
 
     @property
+    def market(self) -> str:
+        """Market id (coin + timeframe), e.g. ``ETH-15M``."""
+        return f"{self.asset}-{self.interval.upper()}"
+
+    @property
+    def window_sec(self) -> int:
+        return max(0, int(self.window_end) - int(self.window_start))
+
+    @property
+    def window_key(self) -> tuple[int, int]:
+        return (self.window_sec, int(self.window_start))
+
+    @property
     def remaining_shares(self) -> float:
         return max(0.0, self.shares - self.sold_shares)
 
@@ -198,6 +230,7 @@ class Position:
             "window_end": self.window_end,
             "slug": self.slug,
             "token_id": self.token_id,
+            "interval": self.interval,
             "entry_ts": round(self.entry_ts, 3),
             "entry_price": round(self.entry_price, 8),
             "shares": round(self.shares, 8),
@@ -229,12 +262,17 @@ class Position:
 
     @classmethod
     def from_dict(cls, raw: dict[str, Any]) -> "Position":
+        interval = str(raw.get("interval") or "5m").strip().lower()
+        default_span = 900 if interval == "15m" else 300
         return cls(
             position_id=str(raw["position_id"]),
             asset=str(raw["asset"]).upper(),
             side=Side(str(raw["side"]).upper()),
             window_start=int(raw["window_start"]),
-            window_end=int(raw.get("window_end") or int(raw["window_start"]) + 300),
+            window_end=int(
+                raw.get("window_end")
+                or int(raw["window_start"]) + default_span
+            ),
             slug=str(raw.get("slug", "")),
             token_id=str(raw["token_id"]),
             entry_ts=float(raw["entry_ts"]),
@@ -245,6 +283,7 @@ class Position:
             tp_price=float(raw["tp_price"]),
             sl_price=float(raw.get("sl_price", 0.0) or 0.0),
             stake_usd=float(raw.get("stake_usd", raw.get("cost_usd", 0.0))),
+            interval=interval,
             up_token=str(raw.get("up_token", "")),
             down_token=str(raw.get("down_token", "")),
             exchange_position_id=str(raw.get("exchange_position_id", "") or ""),
@@ -271,27 +310,31 @@ class Position:
 
 @dataclass
 class SidePlan:
-    """Per-asset, per-side strategy parameters (from the doc)."""
+    """Per-market (coin × timeframe), per-side strategy parameters."""
 
     asset: str
     side: Side
     entry_thresh: float
     tp_pct: float
     stake_usd: float
-    stop_loss_pct: float = 0.20
-    # Per-asset forced-exit timing (seconds into the 5m window).
-    # The exit starts at force_exit_s and retries until
-    # force_exit_deadline_s; assets can override the global defaults.
-    force_exit_s: float = 240.0
-    force_exit_deadline_s: float = 295.0
+    # Market identity: "ETH-5M" / "ETH-15M".  ``asset`` stays the coin so
+    # PnL can still be grouped per coin.
+    market: str = ""
+    interval: str = "5m"
+    # The market's window and entry window: 300 s / 60 s for 5m,
+    # 900 s / 180 s for 15m.  TP/SL are armed at the fill and run until
+    # the window closes; there is no time-based forced exit.
+    window_sec: int = 300
+    entry_window_end_s: float = 60.0
+    stop_loss_pct: float = 0.0
     # Official taker fee rate for this market:
     #   fee = shares * rate * p * (1 - p)
-    # BTC 5m markets are 0.05; other crypto 5m markets are 0.01.
+    # BTC markets are 0.05; other crypto markets are 0.01.
     taker_fee_rate: float = 0.01
 
     @property
     def key(self) -> str:
-        return f"{self.asset}-{self.side.value}"
+        return f"{self.market or self.asset}-{self.side.value}"
 
 
 @dataclass
@@ -313,11 +356,13 @@ class TradeRecord:
     exit_price: float
     exit_usdc: float
     exit_fee: float
-    reason: str                # tp / time_exit / settle
+    reason: str                # tp / sl / settle / shutdown
     pnl_gross: float
     pnl_net: float
     stake_usd: float
     mode: str                  # paper / live
+    # Market timeframe ("5m" / "15m").  Older trade rows default to 5m.
+    interval: str = "5m"
     sl_price: float = 0.0      # 0 = no price stop
     tp_observed_price: float = 0.0
     tp_observed_bid: float = 0.0
@@ -332,10 +377,16 @@ class TradeRecord:
     entry_quote_ts: float = 0.0
     note: str = ""
 
+    @property
+    def market(self) -> str:
+        return f"{self.asset}-{self.interval.upper()}"
+
     def to_dict(self) -> dict[str, Any]:
         return {
             "position_id": self.position_id,
             "asset": self.asset,
+            "interval": self.interval,
+            "market": self.market,
             "side": self.side,
             "window_start": self.window_start,
             "slug": self.slug,

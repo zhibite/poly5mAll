@@ -49,10 +49,11 @@ _BODY = r"""
     <select id="f-reason" style="width:150px">
       <option value="">全部原因</option>
       <option value="tp">tp（止盈）</option>
-      <option value="stop_loss">stop_loss（价格止损）</option>
-      <option value="time_exit">time_exit（240s 强平）</option>
+      <option value="sl">sl（价格止损）</option>
       <option value="settle">settle（结算）</option>
       <option value="shutdown">shutdown（退出）</option>
+      <option value="stop_loss">stop_loss（旧版止损）</option>
+      <option value="time_exit">time_exit（旧版时间强平）</option>
     </select>
     <select id="f-mode" style="width:120px">
       <option value="">全部模式</option>
@@ -118,6 +119,20 @@ _BODY = r"""
 </div>
 
 <div class="section">
+  <h2>按周期统计（5m / 15m）</h2>
+  <div class="table-wrap">
+    <table>
+      <thead><tr>
+        <th>周期</th><th class="num">笔数</th><th class="num">胜/负</th>
+        <th class="num">胜率</th><th class="num">净 PnL</th><th class="num">毛 PnL</th>
+        <th class="num">费用</th><th class="num">最大回撤</th>
+      </tr></thead>
+      <tbody id="by-interval"><tr><td colspan="8" class="no-data">加载中...</td></tr></tbody>
+    </table>
+  </div>
+</div>
+
+<div class="section">
   <h2>按原因统计</h2>
   <div class="table-wrap">
     <table>
@@ -153,10 +168,11 @@ let ASSET_OPTIONS_LOADED = false;
 function reasonLabel(r) {
   return ({
     tp: 'tp（止盈）',
-    stop_loss: 'stop_loss（价格止损）',
-    time_exit: 'time_exit（240s 强平）',
+    sl: 'sl（价格止损）',
     settle: 'settle（结算）',
     shutdown: 'shutdown（退出）',
+    stop_loss: 'stop_loss（旧版止损）',
+    time_exit: 'time_exit（旧版时间强平）',
   })[String(r || '').toLowerCase()] || (r || '--');
 }
 
@@ -181,6 +197,18 @@ function renderStats(stats) {
   const byAsset = Object.entries(stats.by_asset || {});
   $('by-asset').innerHTML = byAsset.map(([asset, s]) => `<tr>
     <td><b>${escapeHtml(asset)}</b></td>
+    <td class="num">${s.trades || 0}</td>
+    <td class="num">${s.wins || 0} / ${s.losses || 0}</td>
+    <td class="num">${pct(s.win_rate)}</td>
+    <td class="num ${cls(s.net)}">${money(s.net, 4)}</td>
+    <td class="num">${fmt(s.gross, 2)}</td>
+    <td class="num red">${fmt(s.fees, 2)}</td>
+    <td class="num red">${fmt(s.max_drawdown, 2)}</td>
+  </tr>`).join('') || '<tr><td colspan="8" class="no-data">暂无数据</td></tr>';
+
+  const byInterval = Object.entries(stats.by_interval || {});
+  $('by-interval').innerHTML = byInterval.map(([interval, s]) => `<tr>
+    <td><b>${escapeHtml(interval)}</b></td>
     <td class="num">${s.trades || 0}</td>
     <td class="num">${s.wins || 0} / ${s.losses || 0}</td>
     <td class="num">${pct(s.win_rate)}</td>
@@ -249,7 +277,8 @@ function renderTrades(payload) {
         ? fmt(r.tp_observed_price, 3) : '--';
       return `<tr>
         <td>${utcFull(r.exit_ts)}</td>
-        <td><b>${escapeHtml(r.asset)}</b></td>
+        <td><b>${escapeHtml(r.asset)}</b>
+          <span class="pill blue">${escapeHtml(r.interval || '5m')}</span></td>
         <td>${escapeHtml(r.side)}</td>
         <td>${escapeHtml(reasonLabel(r.reason))}</td>
         <td><span class="pill ${r.mode === 'live' ? 'red' : 'blue'}">${r.mode === 'live' ? '实盘' : '纸面'}</span></td>

@@ -1,15 +1,16 @@
 """Polymarket public REST client.
 
-Adapted from ``02.poly1h/src/market/pm_client.py`` for the 5m series:
+Adapted from ``02.poly1h/src/market/pm_client.py`` for the 5m and 15m
+series:
 
-  * Gamma ``/events?slug={asset}-updown-5m-{epoch}`` discovers the market
-    and its UP/DOWN token ids.
+  * Gamma ``/events?slug={asset}-updown-{5m|15m}-{epoch}`` discovers the
+    market and its UP/DOWN token ids.
   * CLOB ``/midpoint`` supplies the stable strategy reference price.
   * CLOB ``/orderbook`` supplies executable depth for paper fills.
   * ``/tick-size`` is queried once per new window and re-read by exits:
-    5m tokens can quote on a 0.001 grid, and the CLOB can lower the tick
-    mid-window (observed 0.01 -> 0.001 near expiry).  A hard-coded 0.01
-    made forced exits unsellable below one cent.  ``/fee-rate`` remains
+    these tokens can quote on a 0.001 grid, and the CLOB can lower the
+    tick mid-window (observed 0.01 -> 0.001 near expiry).  A hard-coded
+    0.01 made exits unsellable below one cent.  ``/fee-rate`` remains
     diagnostic; the configured fee rate is used on the critical path.
   * ``/events?slug=`` is reused after settlement to resolve a position
     whose 240 s market exit could not be filled.
@@ -54,7 +55,10 @@ class PolymarketClient:
         self.polymarket_host = polymarket_host.rstrip("/")
         self.timeout_s = float(timeout_s)
         self._http: Optional[httpx.AsyncClient] = None
-        self._prefix_cache: dict[str, str] = {}
+        # (asset, interval) -> working slug prefix.  The interval must be
+        # part of the key: "eth-updown-5m" is not a valid prefix for the
+        # 15m series.
+        self._prefix_cache: dict[tuple[str, str], str] = {}
 
     async def _client(self) -> httpx.AsyncClient:
         if self._http is None or self._http.is_closed:
@@ -91,7 +95,11 @@ class PolymarketClient:
         window_sec: int = 300,
         limit: int = 5,
     ) -> list[dict[str, Any]]:
-        """Return active/next 5m markets for ``asset``.
+        """Return active/next markets for ``asset`` at one timeframe.
+
+        ``slug_interval`` is "5m" or "15m"; ``window_sec`` is the matching
+        window length (300 / 900).  The same slug pattern is used for
+        both series.
 
         The returned dicts carry:
             ``tokens``            [{"token_id", "outcome"}] in Up/Down order
@@ -138,7 +146,7 @@ class PolymarketClient:
             reachable = any(ok for _, ok in results)
             found = self._parse_pages(slugs, starts, pages, limit)
             if found:
-                self._prefix_cache[asset_u] = prefix
+                self._prefix_cache[(asset_u, slug_interval)] = prefix
                 return found
             if not reachable:
                 log.warning(
@@ -152,7 +160,7 @@ class PolymarketClient:
         return []
 
     def _slug_prefixes(self, asset: str, slug_interval: str) -> list[str]:
-        cached = self._prefix_cache.get(asset)
+        cached = self._prefix_cache.get((asset, slug_interval))
         names = _UPDOWN_SLUG_NAMES.get(asset, (asset.lower(),))
         prefixes: list[str] = []
         if cached:

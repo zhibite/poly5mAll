@@ -68,6 +68,17 @@ def _group(
     return {name: _bucket(items) for name, items in sorted(buckets.items())}
 
 
+def _group_interval(
+    rows: Iterable[dict[str, Any]]
+) -> dict[str, dict[str, Any]]:
+    """Per-timeframe buckets; legacy trade rows count as 5m."""
+    buckets: dict[str, list[dict[str, Any]]] = {}
+    for row in rows:
+        name = str(row.get("interval") or "5m").strip().lower()
+        buckets.setdefault(name, []).append(row)
+    return {name: _bucket(items) for name, items in sorted(buckets.items())}
+
+
 def _tp_execution(rows: list[dict[str, Any]]) -> dict[str, Any]:
     """Observed-vs-actual take-profit analysis.
 
@@ -160,6 +171,7 @@ def compute_stats(trades: list[dict[str, Any]]) -> dict[str, Any]:
         "total": _bucket(rows),
         "today": _bucket(today_rows),
         "by_asset": _group(rows, "asset"),
+        "by_interval": _group_interval(rows),
         "by_reason": _group(rows, "reason"),
         "by_side": _group(rows, "side"),
         "by_day": {

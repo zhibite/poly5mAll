@@ -1,14 +1,15 @@
-"""Runtime per-asset overrides edited from the Web config page.
+"""Runtime per-market overrides edited from the Web config page.
 
 The immutable ``config.toml`` remains the baseline.  This file stores the
-effective per-asset values in ``<data_dir>/runtime_config.json`` so a web
-edit survives a restart.  The runner reads the current asset config at the
-start of every 5m window; enable/disable is checked on every entry attempt,
-so closing a coin takes effect immediately while entry/TP/side/stake edits
-wait for the next window.
+effective per-market values in ``<data_dir>/runtime_config.json`` so a web
+edit survives a restart.  A market is a coin on one timeframe ("ETH-5M" /
+"ETH-15M").  The runner reads the current market config at the start of
+every window; enable/disable is checked on every entry attempt, so closing
+a market takes effect immediately while entry/TP/SL/side/stake edits wait
+for its next window.
 
 Only strategy fields are stored here.  Credentials, fee rate, port and the
-timing constants stay in .env / config.toml.
+window/entry timing stay in .env / config.toml.
 """
 from __future__ import annotations
 
@@ -51,6 +52,8 @@ _RISK_UPDATE_SPECS: dict[str, dict[str, Any]] = {
     "max_daily_loss_usd": {"minimum": 0.0},
     "max_intraday_drawdown_usd": {"minimum": 0.0},
     "intraday_drawdown_pause_min": {"minimum": 0.0},
+    "max_open_positions": {"integer": True, "minimum": 0},
+    "max_open_notional_usd": {"minimum": 0.0},
     "max_same_side_per_window": {"integer": True, "minimum": 0},
     "max_positions_per_window": {"integer": True, "minimum": 0},
     "max_window_notional_usd": {"minimum": 0.0},
@@ -93,7 +96,7 @@ def _validate_values(
     name: str, raw: dict[str, Any], base: AssetConfig
 ) -> dict[str, Any]:
     if not isinstance(raw, dict):
-        raise ValueError(f"{name}: asset override must be an object")
+        raise ValueError(f"{name}: market override must be an object")
     out: dict[str, Any] = {}
     if "enabled" in raw:
         out["enabled"] = bool(raw["enabled"])
@@ -138,25 +141,6 @@ def _validate_values(
             raise ValueError(f"{name}: stop_loss_pct must be in [0, 1)")
         out["stop_loss_pct"] = sl
 
-    try:
-        force = float(raw.get("force_exit_s", base.force_exit_s))
-        deadline = float(
-            raw.get("force_exit_deadline_s", base.force_exit_deadline_s)
-        )
-    except (TypeError, ValueError) as exc:
-        raise ValueError(
-            f"{name}: force_exit_s/force_exit_deadline_s must be numbers"
-        ) from exc
-    if not (60.0 < force < 300.0):
-        raise ValueError(f"{name}: force_exit_s must be in (60, 300)")
-    if not (force <= deadline <= 300.0):
-        raise ValueError(
-            f"{name}: force_exit_deadline_s must be >= force_exit_s "
-            "and <= 300"
-        )
-    out["force_exit_s"] = force
-    out["force_exit_deadline_s"] = deadline
-
     return out
 
 
@@ -169,6 +153,8 @@ class RuntimeConfig:
         default_mode: str = "paper",
         live_allowed: bool = False,
         max_daily_loss_usd: float | None = None,
+        max_open_positions: int | None = None,
+        max_open_notional_usd: float | None = None,
         max_same_side_per_window: int | None = None,
         max_intraday_drawdown_usd: float | None = None,
         intraday_drawdown_pause_min: float | None = None,
@@ -181,9 +167,9 @@ class RuntimeConfig:
     ) -> None:
         self.path = Path(path) if path else None
         self.base: dict[str, AssetConfig] = {
-            a.asset: a for a in base_assets
+            a.market.upper(): a for a in base_assets
         }
-        self.order: list[str] = [a.asset for a in base_assets]
+        self.order: list[str] = [a.market.upper() for a in base_assets]
         self.overrides: dict[str, dict[str, Any]] = {}
         self.version = 0
         self.updated_at = 0.0
@@ -210,6 +196,8 @@ class RuntimeConfig:
         # None means "not overridden here": the runner falls back to the
         # config.toml / .env value.
         initial: dict[str, float | int | None] = {
+            "max_open_positions": max_open_positions,
+            "max_open_notional_usd": max_open_notional_usd,
             "max_intraday_drawdown_usd": max_intraday_drawdown_usd,
             "intraday_drawdown_pause_min": intraday_drawdown_pause_min,
             "max_positions_per_window": max_positions_per_window,
@@ -220,6 +208,8 @@ class RuntimeConfig:
             "asset_perf_disable_pnl_usd": asset_perf_disable_pnl_usd,
         }
         casters = {
+            "max_open_positions": lambda v: max(0, int(v)),
+            "max_open_notional_usd": lambda v: max(0.0, float(v)),
             "max_intraday_drawdown_usd": lambda v: max(0.0, float(v)),
             "intraday_drawdown_pause_min": lambda v: max(0.0, float(v)),
             "max_positions_per_window": lambda v: max(0, int(v)),
@@ -248,6 +238,8 @@ class RuntimeConfig:
             default_mode=settings.mode,
             live_allowed=settings.live,
             max_daily_loss_usd=e.max_daily_loss_usd,
+            max_open_positions=e.max_open_positions,
+            max_open_notional_usd=e.max_open_notional_usd,
             max_same_side_per_window=e.max_same_side_per_window,
             max_intraday_drawdown_usd=e.max_intraday_drawdown_usd,
             intraday_drawdown_pause_min=e.intraday_drawdown_pause_min,
@@ -260,10 +252,29 @@ class RuntimeConfig:
         )
 
     # ── reads ──────────────────────────────────────────────────────────
+    def _keys_for(self, name: str) -> list[str]:
+        """Market key(s) for a market id or a coin alias.
+
+        ``ETH`` expands to both ETH-5M and ETH-15M (used by the legacy
+        one-table-per-coin runtime file and by API clients), while
+        ``ETH-15M`` is exact.
+        """
+        key = str(name).strip().upper()
+        if key in self.base:
+            return [key]
+        return [
+            market
+            for market, cfg in self.base.items()
+            if cfg.asset.upper() == key
+        ]
+
     def asset(self, name: str) -> AssetConfig:
-        name = name.upper()
-        base = self.base[name]
-        ov = self.overrides.get(name, {})
+        keys = self._keys_for(name)
+        if not keys:
+            raise KeyError(name)
+        key = keys[0]
+        base = self.base[key]
+        ov = self.overrides.get(key, {})
         return dataclasses.replace(
             base,
             enabled=bool(ov.get("enabled", base.enabled)),
@@ -273,14 +284,6 @@ class RuntimeConfig:
             stake_usd=ov.get("stake_usd", base.stake_usd),
             stop_loss_pct=float(
                 ov.get("stop_loss_pct", base.stop_loss_pct)
-            ),
-            force_exit_s=float(
-                ov.get("force_exit_s", base.force_exit_s)
-            ),
-            force_exit_deadline_s=float(
-                ov.get(
-                    "force_exit_deadline_s", base.force_exit_deadline_s
-                )
             ),
         )
 
@@ -293,15 +296,17 @@ class RuntimeConfig:
             a = self.asset(name)
             out.append(
                 {
+                    "market": a.market,
                     "asset": a.asset,
+                    "interval": a.interval,
+                    "window_sec": a.window_sec,
+                    "entry_window_end_s": a.entry_window_end_s,
                     "enabled": a.enabled,
                     "sides": [s.value for s in a.sides],
                     "entry_thresh": a.entry_thresh,
                     "tp_pct": a.tp_pct,
                     "stake_usd": a.stake_usd,
                     "stop_loss_pct": a.stop_loss_pct,
-                    "force_exit_s": a.force_exit_s,
-                    "force_exit_deadline_s": a.force_exit_deadline_s,
                 }
             )
         return out
@@ -320,21 +325,24 @@ class RuntimeConfig:
         assets_raw = payload.get("assets", {} if has_global else payload)
         if not isinstance(assets_raw, dict):
             raise ValueError("assets must be an object")
-        unknown = [k for k in assets_raw if str(k).upper() not in self.base]
+        unknown = [k for k in assets_raw if not self._keys_for(k)]
         if unknown:
-            raise ValueError(f"unknown asset(s): {', '.join(unknown)}")
+            raise ValueError(
+                f"unknown market(s): {', '.join(str(k) for k in unknown)}"
+            )
 
         for name, raw in assets_raw.items():
-            name_u = str(name).upper()
-            base = self.base[name_u]
-            # Validate the combination of the existing override and the
-            # patch, so a partial update cannot create entry*(1+tp) >= 1
-            # using the baseline value for the missing field.
-            merged = dict(self.overrides.get(name_u, {}))
-            merged.update(raw)
-            self.overrides[name_u] = _validate_values(
-                name_u, merged, base
-            )
+            for name_u in self._keys_for(name):
+                base = self.base[name_u]
+                # Validate the combination of the existing override and
+                # the patch, so a partial update cannot create
+                # entry*(1+tp) >= 1 using the baseline for the missing
+                # field.
+                merged = dict(self.overrides.get(name_u, {}))
+                merged.update(raw)
+                self.overrides[name_u] = _validate_values(
+                    name_u, merged, base
+                )
 
         self.version += 1
         self.updated_at = time.time()
@@ -414,23 +422,27 @@ class RuntimeConfig:
         if not isinstance(assets_raw, dict):
             return
         for name, values in assets_raw.items():
-            name_u = str(name).upper()
-            base = self.base.get(name_u)
-            if base is None or not isinstance(values, dict):
+            if not isinstance(values, dict):
                 continue
-            try:
-                # The saved file contains effective values, so treat every
-                # field as an override (same values as base when untouched).
-                validated = _validate_values(name_u, values, base)
-            except ValueError as exc:
-                self.last_error = str(exc)
-                log.warning(
-                    "runtime_config.asset_skipped asset={} error={}",
-                    name_u,
-                    exc,
-                )
-                continue
-            self.overrides[name_u] = validated
+            # A file written before 15m support keys overrides by coin
+            # ("ETH"); apply that override to both timeframes.
+            for name_u in self._keys_for(name):
+                base = self.base[name_u]
+                try:
+                    # The saved file contains effective values, so treat
+                    # every field as an override (same as base when
+                    # untouched).  Removed fields such as force_exit_s
+                    # are ignored by the validator.
+                    validated = _validate_values(name_u, values, base)
+                except ValueError as exc:
+                    self.last_error = str(exc)
+                    log.warning(
+                        "runtime_config.market_skipped market={} error={}",
+                        name_u,
+                        exc,
+                    )
+                    continue
+                self.overrides[name_u] = validated
         log.info(
             "runtime_config.loaded version={} overrides={}",
             self.version,
@@ -447,15 +459,13 @@ class RuntimeConfig:
             "mode": self.mode,
             **{field: getattr(self, field) for field in _RISK_FIELDS},
             "assets": {
-                row["asset"]: {
+                row["market"]: {
                     "enabled": row["enabled"],
                     "sides": "+".join(row["sides"]),
                     "entry_thresh": row["entry_thresh"],
                     "tp_pct": row["tp_pct"],
                     "stake_usd": row["stake_usd"],
                     "stop_loss_pct": row["stop_loss_pct"],
-                    "force_exit_s": row["force_exit_s"],
-                    "force_exit_deadline_s": row["force_exit_deadline_s"],
                 }
                 for row in self.snapshot()
             },

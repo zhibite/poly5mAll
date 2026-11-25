@@ -1,15 +1,15 @@
-"""Multi-asset orchestrator.
+"""Multi-market orchestrator.
 
-One process, seven assets, one shared price layer:
+One process, 6 coins x 2 timeframes (12 markets), one shared price layer:
 
-    MarketService   Gamma discovery (current + next 5m window)
+    MarketService   Gamma discovery (current + next window per market)
     MarketWS        CLOB market WebSocket (BBO + last trade)
     midpoint loop   CLOB /midpoint every 2 s as the stable fallback
-    AssetRunner ×7  one strategy loop per asset
+    AssetRunner ×12 one strategy loop per market
     StateStore      state.json / trades.jsonl / status.json
 
-Each asset has its own asyncio task, so a slow FAK order for one asset
-cannot delay another asset's 0–60 s entry window.
+Each market has its own asyncio task, so a slow FAK order for one market
+cannot delay another market's entry window (60 s for 5m, 180 s for 15m).
 """
 from __future__ import annotations
 
@@ -23,7 +23,7 @@ from src.economics import fee_line, floor_tick
 from src.runtime_config import RuntimeConfig
 from src.execution.broker import Broker, PaperBroker
 from src.infra.logging import get_logger
-from src.infra.timeutil import day_key, utc_hms, utc_iso
+from src.infra.timeutil import day_key, utc_hms, utc_iso, window_start
 from src.market.market_ws import MarketWS, MarketWSManager, PriceCache
 from src.market.service import MarketService
 from src.models import (
@@ -51,14 +51,21 @@ log = get_logger("runner")
 # minute), so the value cached at discovery is not enough for exits.
 _TICK_REFRESH_S = 5.0
 
+# After a partial SELL the CLOB can keep the matched shares locked for a
+# moment.  Retrying the full remainder immediately is rejected with
+# "not enough balance / allowance"; wait this long for the lock to clear.
+_PARTIAL_EXIT_COOLDOWN_S = 3.5
+
 
 async def _always_reserve_entry(
-    side: Side, window_start: int, notional: float = 0.0
+    side: Side, window_key: tuple[int, int], notional: float = 0.0
 ) -> tuple[bool, str]:
     return True, ""
 
 
-async def _release_entry_noop(side: Side, window_start: int) -> None:
+async def _release_entry_noop(
+    side: Side, window_key: tuple[int, int]
+) -> None:
     return None
 
 
@@ -68,7 +75,7 @@ def _default_stake_policy(asset: str) -> tuple[bool, float, str]:
 
 
 class AssetRunner:
-    """The strategy loop for one asset."""
+    """The strategy loop for one market (coin × timeframe)."""
 
     def __init__(
         self,
@@ -88,6 +95,8 @@ class AssetRunner:
         stake_policy=None,
     ) -> None:
         self.asset = asset_cfg.asset
+        self.interval = asset_cfg.interval
+        self.market = asset_cfg.market
         self.cfg = asset_cfg
         self.runtime = runtime
         self.settings = settings
@@ -111,10 +120,10 @@ class AssetRunner:
         self.last_skip_reason = ""
 
     def current_cfg(self) -> AssetConfig:
-        """Current runtime config for this asset (falls back to startup)."""
+        """Current runtime config for this market (falls back to startup)."""
         if self.runtime is not None:
             try:
-                return self.runtime.asset(self.asset)
+                return self.runtime.asset(self.market)
             except KeyError:
                 pass
         return self.cfg
@@ -143,8 +152,12 @@ class AssetRunner:
             self.window = None
             self.sides = []
             return
-        window = self.market_service.current(self.asset, now_f)
+        window = self.market_service.current(self.market, now_f)
         if window is None:
+            # The market closed before the next window was discovered (or
+            # discovery is temporarily failing).  Move any open position
+            # to settlement now instead of leaving it in HOLDING forever.
+            self._settle_after_close(now_f)
             return
         if self.window is None or self.window.start_ts != window.start_ts:
             await self._bind(window, now_f)
@@ -153,12 +166,37 @@ class AssetRunner:
                 await self._tick_side(side, now_f)
             except Exception as exc:  # noqa: BLE001
                 self.last_error = str(exc)
-                log.exception("[{}] side tick failed: {}", self.asset, exc)
+                log.exception("[{}] side tick failed: {}", self.market, exc)
+
+    def _settle_after_close(self, now: float) -> None:
+        """Mark open positions SETTLE_PENDING once their window has ended."""
+        if self.window is None or now < self.window.end_ts:
+            return
+        changed = False
+        for side in self.sides:
+            pos = side.position
+            if (
+                pos is not None
+                and not pos.is_flat
+                and side.status is not SideStatus.SETTLE_PENDING
+            ):
+                side.status = SideStatus.SETTLE_PENDING
+                changed = True
+                log.critical(
+                    "[{}] {} {} window closed with {:.4f} shares open; "
+                    "waiting for Gamma settlement",
+                    self.market,
+                    side.plan.side.value,
+                    pos.position_id,
+                    pos.remaining_shares,
+                )
+        if changed:
+            self._on_state_change()
 
     async def _bind(self, window: MarketWindow, now: float) -> None:
         self.window = window
-        # Keep any open position from the previous window; it is either
-        # being force-exited or waiting for settlement.
+        # Keep any open position from the previous window; it is waiting
+        # for Gamma settlement.
         self.retired = [
             s
             for s in self.retired
@@ -168,14 +206,13 @@ class AssetRunner:
             if side.position is not None and not side.position.is_flat:
                 # The old window has ended, so this position can no longer
                 # be exited.  Mark it SETTLE_PENDING explicitly: a position
-                # retired while still HOLDING (e.g. the last sell attempt
-                # failed just as the window flipped) would otherwise never
-                # be picked up by the settlement loop.
+                # retired while still HOLDING would otherwise never be
+                # picked up by the settlement loop.
                 side.status = SideStatus.SETTLE_PENDING
                 self.retired.append(side)
                 log.warning(
                     "[{}] retiring open {} position {} into settlement tracking",
-                    self.asset,
+                    self.market,
                     side.plan.side.value,
                     side.position.position_id,
                 )
@@ -195,7 +232,7 @@ class AssetRunner:
                     log.warning(
                         "[{}] skipping {}: TP does not cover fees "
                         "(net/10U={:+.3f})",
-                        self.asset,
+                        self.market,
                         plan.side.value,
                         line.net_per_trade,
                     )
@@ -207,6 +244,9 @@ class AssetRunner:
         for pos in list(self.pending_positions):
             if pos.window_start != window.start_ts:
                 continue
+            if pos.interval != self.interval:
+                continue
+            pos.interval = self.interval
             side_rt = next(
                 (s for s in self.sides if s.plan.side is pos.side), None
             )
@@ -218,6 +258,10 @@ class AssetRunner:
                         entry_thresh=0.0,
                         tp_pct=0.0,
                         stake_usd=pos.stake_usd,
+                        market=self.market,
+                        interval=self.interval,
+                        window_sec=window.window_sec,
+                        entry_window_end_s=self.current_cfg().entry_window_end_s,
                         taker_fee_rate=self.current_cfg().taker_fee_rate,
                     ),
                     window=window,
@@ -225,7 +269,7 @@ class AssetRunner:
                 self.sides.append(side_rt)
                 log.warning(
                     "[{}] adopting {} position on a side no longer configured",
-                    self.asset,
+                    self.market,
                     pos.side.value,
                 )
             side_rt.position = pos
@@ -240,10 +284,22 @@ class AssetRunner:
             # live exit is not signed with the legacy token-id path.
             if not pos.exchange_position_id:
                 pos.exchange_position_id = window.position(pos.side)
+            if pos.sl_price <= 0 and side_rt.plan.stop_loss_pct > 0:
+                # A position restored from a state file written while the
+                # stop was off gets the currently configured stop armed.
+                pos.sl_price = pos.entry_price * (
+                    1.0 - float(side_rt.plan.stop_loss_pct)
+                )
+                log.info(
+                    "[{}] armed price stop for restored {} at {:.4f}",
+                    self.market,
+                    pos.position_id,
+                    pos.sl_price,
+                )
             adopted.append(pos)
             log.info(
                 "[{}] adopted {} {} shares={:.4f} entry={:.4f} tp={:.4f}",
-                self.asset,
+                self.market,
                 pos.side.value,
                 pos.position_id,
                 pos.remaining_shares,
@@ -256,7 +312,7 @@ class AssetRunner:
 
         log.info(
             "[{}] window {} start={} tick={:g} sides={}",
-            self.asset,
+            self.market,
             window.slug,
             utc_hms(window.start_ts),
             window.tick_size,
@@ -270,7 +326,7 @@ class AssetRunner:
             }
             asyncio.create_task(
                 self._warn_unknown_balances(window, known),
-                name=f"balance-check-{self.asset}",
+                name=f"balance-check-{self.market}",
             )
         self._on_state_change()
 
@@ -296,7 +352,7 @@ class AssetRunner:
                 log.critical(
                     "[{}] unknown {} balance {:.4f} on {} ({}) — no local "
                     "position tracks it; check the wallet manually",
-                    self.asset,
+                    self.market,
                     side.value,
                     balance,
                     window.slug,
@@ -322,33 +378,39 @@ class AssetRunner:
         if side.status is SideStatus.SETTLE_PENDING:
             return
 
+        if side.window_ended(now):
+            # The market is closed: no more exits are possible.  Any
+            # remaining shares settle at the Gamma 0/1 outcome.
+            side.status = SideStatus.SETTLE_PENDING
+            log.critical(
+                "[{}] {} {} window closed with {:.4f} shares open; "
+                "waiting for Gamma settlement",
+                self.market,
+                side.plan.side.value,
+                pos.position_id,
+                pos.remaining_shares,
+            )
+            self._on_state_change()
+            return
+
+        if side.sl_due(
+            now,
+            quote,
+            self.settings.execution,
+            self.settings.feed,
+        ):
+            await self._exit(side, now, quote, reason="sl")
+            return
+
         if side.tp_due(
             now,
             quote,
-            self.settings.general,
             self.settings.execution,
             self.settings.feed,
             mode=self.settings.execution.tp_execution_mode,
         ):
             await self._exit(side, now, quote, reason="tp")
             return
-
-        if side.force_exit_due(
-            now, self.settings.general, self.settings.execution
-        ):
-            await self._exit(side, now, quote, reason="time_exit")
-            return
-
-        if side.deadline_passed(now, self.settings.general):
-            side.status = SideStatus.SETTLE_PENDING
-            log.critical(
-                "[{}] {} {} could not be sold by {}s; waiting for settlement",
-                self.asset,
-                side.plan.side.value,
-                pos.position_id,
-                side.plan.force_exit_deadline_s,
-            )
-            self._on_state_change()
 
     async def _maybe_enter(
         self, side: SideRuntime, now: float, quote: Quote | None
@@ -360,7 +422,6 @@ class AssetRunner:
         reason = side.entry_block_reason(
             now,
             quote,
-            self.settings.general,
             self.settings.execution,
             self.settings.feed,
         )
@@ -389,9 +450,9 @@ class AssetRunner:
             self._log_skip("asset-perf-disabled", side, now)
             return
 
-        window_start = self.window.start_ts
+        window_key = self.window.key
         reserved, reserve_reason = await self._reserve_entry_cb(
-            side.plan.side, window_start, stake_usd
+            side.plan.side, window_key, stake_usd
         )
         if not reserved:
             side.last_reason = reserve_reason or "entry-limit"
@@ -415,7 +476,7 @@ class AssetRunner:
                 )
             except Exception as exc:  # noqa: BLE001
                 side.on_entry_missed(now)
-                log.exception("[{}] buy failed: {}", self.asset, exc)
+                log.exception("[{}] buy failed: {}", self.market, exc)
                 return
             if fill is None or fill.shares <= 0:
                 side.last_reason = "no-fill"
@@ -431,7 +492,7 @@ class AssetRunner:
                 side.on_entry_missed(now)
                 log.error(
                     "[{}] invalid entry fill {}: {}",
-                    self.asset,
+                    self.market,
                     fill,
                     exc,
                 )
@@ -453,7 +514,7 @@ class AssetRunner:
                 "[{}] ENTRY {} {} shares={:.4f} px={:.4f} cost={:.4f} "
                 "fee={:.4f} tp={:.4f} mid={:.4f} bid={:.4f} ask={:.4f} "
                 "spread={:.4f} src={}",
-                self.asset,
+                self.market,
                 side.plan.side.value,
                 position.position_id,
                 position.shares,
@@ -469,7 +530,7 @@ class AssetRunner:
             )
             self._on_state_change()
         finally:
-            await self._release_entry_cb(side.plan.side, window_start)
+            await self._release_entry_cb(side.plan.side, window_key)
 
     async def _exit(
         self,
@@ -488,7 +549,7 @@ class AssetRunner:
             record = side.on_dust(now, reason, self.mode)
             log.warning(
                 "[{}] {} {} dust {:.6f} written off (reason={})",
-                self.asset,
+                self.market,
                 side.plan.side.value,
                 pos.position_id,
                 remaining,
@@ -540,7 +601,7 @@ class AssetRunner:
                 # Doc's option B: cross the book at market after the
                 # observed mid crosses the target.  This can fill below
                 # the target if the bid has not caught up.
-                limit = self._force_exit_limit(quote, tick)
+                limit = self._market_exit_limit(quote, tick)
             else:
                 # Observed fill with a target floor: only fill at bids at
                 # or above the target; a gap to 0.42 fills at 0.42.
@@ -550,7 +611,7 @@ class AssetRunner:
                     floor_tick(pos.tp_price, tick),
                 )
         else:
-            limit = self._force_exit_limit(quote, tick)
+            limit = self._market_exit_limit(quote, tick)
 
         if (
             remaining < MIN_ORDER_SHARES - 1e-9
@@ -562,7 +623,7 @@ class AssetRunner:
             log.warning(
                 "[{}] {} {} shares {:.4f} < {:.2f} and notional {:.4f}U "
                 "< {:.2f}U; waiting for settlement",
-                self.asset,
+                self.market,
                 side.plan.side.value,
                 pos.position_id,
                 remaining,
@@ -584,7 +645,7 @@ class AssetRunner:
             )
         except Exception as exc:  # noqa: BLE001
             side.on_exit_missed(now)
-            log.exception("[{}] sell failed: {}", self.asset, exc)
+            log.exception("[{}] sell failed: {}", self.market, exc)
             return
         if fill is None or fill.shares <= 0:
             side.on_exit_missed(now)
@@ -596,7 +657,7 @@ class AssetRunner:
         log.info(
             "[{}] EXIT {} {} reason={} mode={} tp_target={:.4f} "
             "shares={:.4f} px={:.4f} usdc={:.4f}",
-            self.asset,
+            self.market,
             side.plan.side.value,
             pos.position_id,
             reason,
@@ -608,6 +669,22 @@ class AssetRunner:
             fill.price,
             fill.usdc,
         )
+        sold = remaining - pos.remaining_shares
+        if record is None and sold > 0 and not pos.is_flat:
+            # The CLOB may still count the matched shares as locked.
+            # Selling the full remainder now is rejected for balance, so
+            # hold the next attempt until the fill has settled.
+            side.exit_cooldown_until = now + _PARTIAL_EXIT_COOLDOWN_S
+            log.info(
+                "[{}] EXIT {} {} partial sold={:.4f} remaining={:.4f}; "
+                "next sell in {:.1f}s (matched shares settling)",
+                self.market,
+                side.plan.side.value,
+                pos.position_id,
+                sold,
+                pos.remaining_shares,
+                _PARTIAL_EXIT_COOLDOWN_S,
+            )
         if record is not None:
             self._on_trade(record)
         self._on_state_change()
@@ -627,7 +704,7 @@ class AssetRunner:
         if abs(tick - pos.tick_size) > 1e-12:
             log.info(
                 "[{}] {} tick changed {:.4g} -> {:.4g}",
-                self.asset,
+                self.market,
                 pos.position_id,
                 pos.tick_size,
                 tick,
@@ -635,7 +712,7 @@ class AssetRunner:
             pos.tick_size = tick
         return tick
 
-    def _force_exit_limit(self, quote: Quote | None, tick: float) -> float:
+    def _market_exit_limit(self, quote: Quote | None, tick: float) -> float:
         """Marketable SELL limit inside the CLOB price range.
 
         Round the slippage-adjusted bid down to the tick and never place
@@ -643,7 +720,7 @@ class AssetRunner:
         rejects any price below 0.01 even when the tick is 0.001, so the
         limit is clamped into [0.01, max(bid, 0.01)]: near zero the order
         may not fill, but it stays valid and can cross if the bid recovers
-        before the force-exit deadline.
+        before the window closes.
         """
         tick_f = float(tick) if tick and tick > 0 else 0.01
         low = max(float(MIN_LIMIT_PRICE), tick_f)
@@ -671,7 +748,7 @@ class AssetRunner:
         self.last_skip_log = now
         log.debug(
             "[{}] {} entry skipped: {}",
-            self.asset,
+            self.market,
             side.plan.side.value,
             reason,
         )
@@ -687,7 +764,7 @@ class AssetRunner:
                 record = side.on_dust(now, "shutdown", self.mode)
                 log.warning(
                     "[{}] {} dust {:.6f} written off (shutdown)",
-                    self.asset,
+                    self.market,
                     pos.position_id,
                     remaining,
                 )
@@ -708,7 +785,7 @@ class AssetRunner:
                 log.warning(
                     "[{}] {} shares {:.4f} < {:.2f} and notional "
                     "{:.4f}U < {:.2f}U; left for settlement",
-                    self.asset,
+                    self.market,
                     pos.position_id,
                     remaining,
                     MIN_ORDER_SHARES,
@@ -726,11 +803,11 @@ class AssetRunner:
                     position_id=pos.exchange_position_id,
                 )
             except Exception as exc:  # noqa: BLE001
-                log.warning("[{}] flatten sell error: {}", self.asset, exc)
+                log.warning("[{}] flatten sell error: {}", self.market, exc)
                 fill = None
             if fill is None or fill.shares <= 0:
                 log.error(
-                    "[{}] flatten failed for {}", self.asset, pos.position_id
+                    "[{}] flatten failed for {}", self.market, pos.position_id
                 )
                 continue
             record = side.on_exit_fill(
@@ -742,7 +819,7 @@ class AssetRunner:
             )
             log.info(
                 "[{}] FLATTEN {} shares={:.4f} px={:.4f}",
-                self.asset,
+                self.market,
                 pos.position_id,
                 fill.shares,
                 fill.price,
@@ -773,15 +850,15 @@ class AssetRunner:
     def describe(self, now: float) -> str:
         cfg = self.current_cfg()
         if not cfg.enabled and not self.positions():
-            return f"{self.asset}: disabled"
+            return f"{self.market}: disabled"
         if self.window is None:
-            return f"{self.asset}: no window"
-        parts = [f"{self.asset} {utc_hms(self.window.start_ts)}"]
+            return f"{self.market}: no window"
+        parts = [f"{self.market} {utc_hms(self.window.start_ts)}"]
         for side in self.sides:
             quote = self.cache.quote(
                 self.window.token(side.plan.side), now=now, max_age=30.0
             )
-            parts.append(side.describe(now, self.settings.general, quote))
+            parts.append(side.describe(now, quote))
         for side in self.retired:
             parts.append(f"[retired]{side.plan.side.value}:{side.status.value}")
         return " | ".join(parts)
@@ -806,9 +883,7 @@ class AssetRunner:
             sides[f"{side.plan.side.value}{'[retired]' if side in self.retired else ''}"] = {
                 "status": side.status.value,
                 "phase": (
-                    side.phase(now, self.settings.general).value
-                    if window is not None
-                    else None
+                    side.phase(now).value if window is not None else None
                 ),
                 "entry_thresh": side.plan.entry_thresh,
                 "tp_pct": side.plan.tp_pct,
@@ -828,18 +903,22 @@ class AssetRunner:
                 "last_reason": side.last_reason,
             }
         return {
+            "market": self.market,
             "asset": self.asset,
+            "interval": cfg.interval,
+            "window_sec": cfg.window_sec,
+            "entry_window_end_s": cfg.entry_window_end_s,
             "window": {
                 "slug": window.slug,
                 "start_ts": window.start_ts,
                 "end_ts": window.end_ts,
+                "interval": window.interval,
+                "window_sec": window.window_sec,
                 "phase": (
                     phase_for(
                         now,
                         window,
-                        self.settings,
-                        force_exit_s=cfg.force_exit_s,
-                        force_exit_deadline_s=cfg.force_exit_deadline_s,
+                        cfg.entry_window_end_s,
                     ).value
                     if window is not None
                     else None
@@ -857,8 +936,8 @@ class AssetRunner:
                 "stop_loss_pct": cfg.stop_loss_pct,
                 "stake_usd": cfg.stake_usd
                 or self.settings.execution.stake_usd,
-                "force_exit_s": cfg.force_exit_s,
-                "force_exit_deadline_s": cfg.force_exit_deadline_s,
+                "window_sec": cfg.window_sec,
+                "entry_window_end_s": cfg.entry_window_end_s,
             },
             "last_error": self.last_error,
         }
@@ -867,27 +946,15 @@ class AssetRunner:
 def phase_for(
     now: float,
     window: MarketWindow,
-    settings: Settings,
-    *,
-    force_exit_s: float | None = None,
-    force_exit_deadline_s: float | None = None,
+    entry_window_end_s: float,
 ) -> Phase:
     t = window.seconds_since(now)
-    g = settings.general
-    force = g.force_exit_s if force_exit_s is None else float(force_exit_s)
-    deadline = (
-        g.force_exit_deadline_s
-        if force_exit_deadline_s is None
-        else float(force_exit_deadline_s)
-    )
     if t < 0:
         return Phase.PRE
-    if t <= g.entry_window_end_s:
+    if t <= entry_window_end_s:
         return Phase.ENTRY
-    if t < force:
+    if t < window.window_sec:
         return Phase.TP
-    if t <= deadline:
-        return Phase.FORCE_EXIT
     return Phase.ENDED
 
 
@@ -926,22 +993,24 @@ class MultiAssetRunner:
         self._last_daily_warn = 0.0
         self._started_at = time.time()
         self._entry_lock = asyncio.Lock()
-        # (side, window_start) -> in-flight entry notionals.  Keyed per
-        # window so a settled position from the previous window cannot
-        # block entries in the next one.  The notionals let the per-window
-        # exposure cap count concurrent attempts that have not filled yet.
-        self._entry_reservations: dict[tuple[Side, int], list[float]] = {}
+        # (side, (window_sec, window_start)) -> in-flight entry notionals.
+        # Keyed per window so a settled position from the previous window
+        # cannot block entries in the next one, and a 5m and a 15m window
+        # with the same start timestamp stay separate.
+        self._entry_reservations: dict[
+            tuple[Side, tuple[int, int]], list[float]
+        ] = {}
         # (exit_ts, asset, pnl_net) from trades.jsonl, for the rolling
         # per-asset performance rule.  Loaded once so a restart keeps the
         # lookback instead of starting from zero.
         self._asset_pnl: deque[tuple[float, str, float]] = deque()
         self._load_asset_history()
 
-        # Build every configured asset, including disabled ones: the Web
-        # config page can turn a coin on without restarting the process.
-        self.assets: dict[str, AssetRunner] = {}
+        # Build every configured market, including disabled ones: the Web
+        # config page can turn a market on without restarting the process.
+        self.markets: dict[str, AssetRunner] = {}
         for asset_cfg in settings.assets:
-            self.assets[asset_cfg.asset] = AssetRunner(
+            self.markets[asset_cfg.market] = AssetRunner(
                 asset_cfg,
                 settings,
                 broker,
@@ -962,8 +1031,10 @@ class MultiAssetRunner:
             1 for pos in self.all_positions() if pos.side is side
         )
 
-    def same_side_open_in_window(self, side: Side, window_start: int) -> int:
-        """Open same-side positions opened in one 5m window.
+    def same_side_open_in_window(
+        self, side: Side, window_key: tuple[int, int]
+    ) -> int:
+        """Open same-side positions opened in one market window.
 
         Positions from earlier windows that are still in settlement do not
         count: they are no longer at risk and must not block the new window.
@@ -971,22 +1042,28 @@ class MultiAssetRunner:
         return sum(
             1
             for pos in self.all_positions()
-            if pos.side is side and pos.window_start == window_start
+            if pos.side is side and pos.window_key == window_key
         )
 
-    def positions_in_window(self, window_start: int) -> list[Position]:
-        """Open positions (both sides, all assets) in one 5m window."""
+    def positions_in_window(
+        self, window_key: tuple[int, int]
+    ) -> list[Position]:
+        """Open positions (both sides, all markets) in one window.
+
+        ``window_key`` is ``(window_sec, start_ts)``: a 5m and a 15m
+        window that start together are counted separately.
+        """
         return [
             pos
             for pos in self.all_positions()
-            if pos.window_start == int(window_start)
+            if pos.window_key == window_key
         ]
 
-    def window_open_notional(self, window_start: int) -> float:
-        """Capital deployed by the open positions of one 5m window."""
+    def window_open_notional(self, window_key: tuple[int, int]) -> float:
+        """Capital deployed by the open positions of one market window."""
         return sum(
             float(getattr(pos, "cost_usd", 0.0) or 0.0)
-            for pos in self.positions_in_window(window_start)
+            for pos in self.positions_in_window(window_key)
         )
 
     def _same_side_reserved(self, side: Side) -> int:
@@ -996,43 +1073,90 @@ class MultiAssetRunner:
             if reserved_side is side
         )
 
-    def _window_reserved(self, window_start: int) -> tuple[int, float]:
+    def _window_reserved(
+        self, window_key: tuple[int, int]
+    ) -> tuple[int, float]:
         """(count, notional) of in-flight entries reserved for a window."""
         count = 0
         notional = 0.0
         for (_, reserved_window), amounts in self._entry_reservations.items():
-            if reserved_window == window_start:
+            if reserved_window == window_key:
                 count += len(amounts)
                 notional += sum(amounts)
         return count, notional
 
-    async def reserve_entry(
-        self, side: Side, window_start: int, notional: float = 0.0
-    ) -> tuple[bool, str]:
-        """Reserve one entry slot for ``window_start``.
+    def _all_reserved(self) -> tuple[int, float]:
+        """(count, notional) of every in-flight entry, all intervals."""
+        count = 0
+        notional = 0.0
+        for amounts in self._entry_reservations.values():
+            count += len(amounts)
+            notional += sum(amounts)
+        return count, notional
 
-        Four caps apply (0 disables each): the global concurrent same-side
-        cap, the same-side per-window cap, the total entries per window
-        across both sides / all assets, and the total entry notional per
-        window.  In-flight attempts count too, so two assets cannot both
-        pass the check at the same moment.  Returns ``(ok, reason)``.
+    def global_open_exposure(self) -> tuple[int, float]:
+        """(open positions + in-flight entries, cost + reserved notional).
+
+        Covers BOTH timeframes and both sides.  Positions waiting for
+        settlement still count: their 0/1 outcome is not known yet.
+        """
+        positions = self.all_positions()
+        reserved_count, reserved_notional = self._all_reserved()
+        notional = sum(
+            float(getattr(pos, "cost_usd", 0.0) or 0.0)
+            for pos in positions
+        )
+        return (
+            len(positions) + reserved_count,
+            notional + reserved_notional,
+        )
+
+    async def reserve_entry(
+        self,
+        side: Side,
+        window_key: tuple[int, int],
+        notional: float = 0.0,
+    ) -> tuple[bool, str]:
+        """Reserve one entry slot for ``window_key``.
+
+        Six caps apply (0 disables each): the global concurrent open
+        position / notional caps across both timeframes, the global
+        concurrent same-side cap, the same-side per-window cap, the total
+        entries per window across both sides / all markets, and the total
+        entry notional per window.  In-flight attempts count too, so two
+        markets cannot both pass the check at the same moment.  Returns
+        ``(ok, reason)``.
         """
         e = self.settings.execution
         limit_total = int(e.max_same_side_positions)
+        limit_open = self.max_open_positions
+        limit_open_notional = self.max_open_notional_usd
         limit_side_window = self.max_same_side_per_window
         limit_window_count = self.max_positions_per_window
         limit_window_notional = self.max_window_notional_usd
         if (
             limit_total <= 0
+            and limit_open <= 0
+            and limit_open_notional <= 0
             and limit_side_window <= 0
             and limit_window_count <= 0
             and limit_window_notional <= 0
         ):
             return True, ""
-        window_start = int(window_start)
+        window_key = (int(window_key[0]), int(window_key[1]))
         notional = max(0.0, float(notional or 0.0))
-        key = (side, window_start)
+        key = (side, window_key)
         async with self._entry_lock:
+            if limit_open > 0 or limit_open_notional > 0:
+                used_open, used_open_notional = self.global_open_exposure()
+                if limit_open > 0 and used_open >= limit_open:
+                    return False, "open-position-limit"
+                if (
+                    limit_open_notional > 0
+                    and used_open_notional + notional
+                    > limit_open_notional + 1e-9
+                ):
+                    return False, "open-notional-limit"
             if limit_total > 0:
                 used_total = (
                     self.same_side_open(side) + self._same_side_reserved(side)
@@ -1041,25 +1165,25 @@ class MultiAssetRunner:
                     return False, "same-side-limit"
             if limit_side_window > 0:
                 used_window = (
-                    self.same_side_open_in_window(side, window_start)
+                    self.same_side_open_in_window(side, window_key)
                     + len(self._entry_reservations.get(key, ()))
                 )
                 if used_window >= limit_side_window:
                     return False, "same-side-limit"
             if limit_window_count > 0 or limit_window_notional > 0:
                 reserved_count, reserved_notional = self._window_reserved(
-                    window_start
+                    window_key
                 )
                 if limit_window_count > 0:
                     used_count = (
-                        len(self.positions_in_window(window_start))
+                        len(self.positions_in_window(window_key))
                         + reserved_count
                     )
                     if used_count >= limit_window_count:
                         return False, "window-position-limit"
                 if limit_window_notional > 0:
                     used_notional = (
-                        self.window_open_notional(window_start)
+                        self.window_open_notional(window_key)
                         + reserved_notional
                     )
                     if used_notional + notional > limit_window_notional + 1e-9:
@@ -1067,8 +1191,10 @@ class MultiAssetRunner:
             self._entry_reservations.setdefault(key, []).append(notional)
             return True, ""
 
-    async def release_entry(self, side: Side, window_start: int) -> None:
-        key = (side, int(window_start))
+    async def release_entry(
+        self, side: Side, window_key: tuple[int, int]
+    ) -> None:
+        key = (side, (int(window_key[0]), int(window_key[1])))
         async with self._entry_lock:
             amounts = self._entry_reservations.get(key)
             if not amounts:
@@ -1109,6 +1235,26 @@ class MultiAssetRunner:
             self._runtime_value(
                 "max_daily_loss_usd",
                 self.settings.execution.max_daily_loss_usd,
+            )
+        )
+
+    @property
+    def max_open_positions(self) -> int:
+        """Effective global concurrent position cap (runtime override)."""
+        return int(
+            self._runtime_value(
+                "max_open_positions",
+                self.settings.execution.max_open_positions,
+            )
+        )
+
+    @property
+    def max_open_notional_usd(self) -> float:
+        """Effective global concurrent notional cap (runtime override)."""
+        return float(
+            self._runtime_value(
+                "max_open_notional_usd",
+                self.settings.execution.max_open_notional_usd,
             )
         )
 
@@ -1260,14 +1406,24 @@ class MultiAssetRunner:
     def asset_perf_snapshot(
         self, now: float | None = None
     ) -> dict[str, dict[str, Any]]:
-        """Per-asset rolling PnL / stake multiplier for the dashboard."""
+        """Per-market rolling PnL / stake multiplier for the dashboard.
+
+        Realized PnL is still grouped per coin: a losing ETH 5m record
+        also downweights ETH 15m.  The snapshot is keyed by market so the
+        UI can show the tag on both rows.
+        """
         if self.asset_perf_lookback_days <= 0:
             return {}
         out: dict[str, dict[str, Any]] = {}
-        for name in self.assets:
-            allowed, mult, reason = self.asset_perf_policy(name, now)
-            out[name] = {
-                "rolling_pnl": round(self.asset_rolling_pnl(name, now), 4),
+        for market, runner in self.markets.items():
+            allowed, mult, reason = self.asset_perf_policy(
+                runner.asset, now
+            )
+            out[market] = {
+                "asset": runner.asset,
+                "rolling_pnl": round(
+                    self.asset_rolling_pnl(runner.asset, now), 4
+                ),
                 "stake_mult": mult,
                 "blocked": not allowed,
                 "reason": reason,
@@ -1280,7 +1436,7 @@ class MultiAssetRunner:
             return "open positions"
         if any(self._entry_reservations.values()):
             return "entry in flight"
-        for runner in self.assets.values():
+        for runner in self.markets.values():
             for side in runner.all_sides():
                 if side.status is SideStatus.ENTERING:
                     return "entry in flight"
@@ -1303,9 +1459,9 @@ class MultiAssetRunner:
         log.warning("runtime mode switched to {}", mode)
         return mode
 
-    def enabled_assets(self) -> set[str]:
+    def enabled_markets(self) -> set[str]:
         out: set[str] = set()
-        for name in self.assets:
+        for name in self.markets:
             try:
                 if self.runtime.asset(name).enabled:
                     out.add(name)
@@ -1338,7 +1494,7 @@ class MultiAssetRunner:
         """Market-sell every open position (best effort).  Returns count."""
         now_f = time.time() if now is None else float(now)
         sold = 0
-        for asset in self.assets.values():
+        for asset in self.markets.values():
             before = len(asset.positions())
             await asset.flatten(now_f)
             sold += max(0, before - len(asset.positions()))
@@ -1446,7 +1602,7 @@ class MultiAssetRunner:
     def all_positions(self) -> list[Position]:
         out: list[Position] = []
         seen: set[str] = set()
-        for asset in self.assets.values():
+        for asset in self.markets.values():
             for pos in asset.positions() + asset.pending_positions:
                 if pos.position_id not in seen and not pos.is_flat:
                     seen.add(pos.position_id)
@@ -1459,7 +1615,7 @@ class MultiAssetRunner:
 
     def open_tokens(self) -> set[str]:
         tokens: set[str] = set()
-        for asset in self.assets.values():
+        for asset in self.markets.values():
             tokens.update(asset.open_tokens())
         tokens.update(p.token_id for p in self._stale if p.token_id)
         return tokens
@@ -1481,17 +1637,18 @@ class MultiAssetRunner:
             asyncio.create_task(self._status_loop(), name="status"),
             asyncio.create_task(self._reconcile_loop(), name="reconcile"),
         ]
-        for asset, runner in self.assets.items():
+        for market, runner in self.markets.items():
             self._tasks.append(
                 asyncio.create_task(
-                    self._asset_loop(asset, runner), name=f"asset-{asset}"
+                    self._market_loop(market, runner),
+                    name=f"market-{market}",
                 )
             )
         log.info(
-            "runner.started mode={} live_available={} assets={}",
+            "runner.started mode={} live_available={} markets={}",
             self.mode,
             self.live_available,
-            ",".join(self.assets),
+            ",".join(self.markets),
         )
 
     async def stop(self, *, flatten: bool | None = None) -> None:
@@ -1516,7 +1673,7 @@ class MultiAssetRunner:
         )
         if do_flatten:
             now = time.time()
-            for asset in self.assets.values():
+            for asset in self.markets.values():
                 try:
                     await asset.flatten(now)
                 except Exception as exc:  # noqa: BLE001
@@ -1530,9 +1687,9 @@ class MultiAssetRunner:
         """Adopt active positions; queue ended ones for settlement."""
         now = time.time()
         for pos in list(self.positions):
-            runner = self.assets.get(pos.asset)
+            runner = self.markets.get(pos.market)
             if runner is None:
-                # The asset is no longer enabled.  Keep it for settlement.
+                # The market is no longer configured.  Keep it for settlement.
                 self._stale.append(pos)
                 continue
             if pos.window_end > now:
@@ -1573,7 +1730,7 @@ class MultiAssetRunner:
         self.positions = []
 
     # ── loops ──────────────────────────────────────────────────────────
-    async def _asset_loop(self, asset: str, runner: AssetRunner) -> None:
+    async def _market_loop(self, market: str, runner: AssetRunner) -> None:
         while self._running:
             try:
                 await runner.tick(time.time())
@@ -1581,21 +1738,23 @@ class MultiAssetRunner:
                 raise
             except Exception as exc:  # noqa: BLE001
                 runner.last_error = str(exc)
-                log.exception("[{}] tick failed: {}", asset, exc)
+                log.exception("[{}] tick failed: {}", market, exc)
             await asyncio.sleep(max(0.05, self.settings.general.tick_s))
 
     async def _discovery_loop(self) -> None:
         while self._running:
             try:
                 now = time.time()
-                assets = list(self.assets)
+                markets = list(self.markets)
                 results = await asyncio.gather(
-                    *(self.market_service.refresh(a, now) for a in assets),
+                    *(self.market_service.refresh(m, now) for m in markets),
                     return_exceptions=True,
                 )
-                for asset, result in zip(assets, results):
+                for market, result in zip(markets, results):
                     if isinstance(result, Exception):
-                        log.warning("[{}] discovery error: {}", asset, result)
+                        log.warning(
+                            "[{}] discovery error: {}", market, result
+                        )
                 self._update_ws_tokens()
             except asyncio.CancelledError:
                 raise
@@ -1611,7 +1770,7 @@ class MultiAssetRunner:
                 # WS-subscribed early but not REST-polled until they start.
                 tokens = list(
                     self.market_service.poll_tokens(
-                        self.open_tokens(), assets=self.enabled_assets()
+                        self.open_tokens(), markets=self.enabled_markets()
                     )
                 )
                 if tokens:
@@ -1642,7 +1801,7 @@ class MultiAssetRunner:
             try:
                 tokens = list(
                     self.market_service.poll_tokens(
-                        self.open_tokens(), assets=self.enabled_assets()
+                        self.open_tokens(), markets=self.enabled_markets()
                     )
                 )
                 if tokens:
@@ -1684,7 +1843,7 @@ class MultiAssetRunner:
         settlement path instead of leaving it stranded.
         """
         now = time.time()
-        for runner in self.assets.values():
+        for runner in self.markets.values():
             for pos in list(runner.pending_positions):
                 if pos.window_end > now:
                     continue
@@ -1707,7 +1866,7 @@ class MultiAssetRunner:
             if not pos.is_flat and pos.position_id not in seen:
                 seen.add(pos.position_id)
                 candidates.append(pos)
-        for runner in self.assets.values():
+        for runner in self.markets.values():
             for side in runner.all_sides():
                 pos = side.position
                 if (
@@ -1724,7 +1883,10 @@ class MultiAssetRunner:
         now = time.time()
         remaining: list[Position] = []
         for pos in candidates:
-            slug = pos.slug or f"{pos.asset.lower()}-updown-5m-{pos.window_start}"
+            slug = pos.slug or (
+                f"{pos.asset.lower()}-updown-{pos.interval}-"
+                f"{pos.window_start}"
+            )
             resolution = await self.pm.get_event_resolution(slug)
             if resolution is None:
                 if now - pos.window_end > 600:
@@ -1752,7 +1914,7 @@ class MultiAssetRunner:
                 else float(resolution.get("DOWN", 0.0))
             )
             payout = 1.0 if payout >= 0.99 else 0.0
-            runner = self.assets.get(pos.asset)
+            runner = self.markets.get(pos.market)
             runtime = (
                 next(
                     (
@@ -1795,7 +1957,7 @@ class MultiAssetRunner:
         tokens = self.market_service.active_tokens(
             self.open_tokens(),
             include_recent=True,
-            assets=self.enabled_assets(),
+            markets=self.enabled_markets(),
         )
         self.market_ws.set_active_tokens(tokens)
 
@@ -1813,7 +1975,7 @@ class MultiAssetRunner:
 
                 # status.json every 5 s; human-readable lines every 15 s.
                 if tick % 3 == 0:
-                    for runner in self.assets.values():
+                    for runner in self.markets.values():
                         log.info("[STATUS] {}", runner.describe(now))
                 payload = self.status_payload(now)
                 self.store.write_status(payload)
@@ -1833,10 +1995,23 @@ class MultiAssetRunner:
             if today_stats is not None
             else 0.0
         )
-        window_start = int(now_f) - int(now_f) % int(
-            self.settings.general.window_sec
-        )
-        reserved_count, reserved_notional = self._window_reserved(window_start)
+        global_count, global_notional = self.global_open_exposure()
+        exposure: dict[str, dict[str, Any]] = {}
+        for interval in self.settings.intervals:
+            start = window_start(now_f, interval.window_sec)
+            key = (int(interval.window_sec), int(start))
+            reserved_count, reserved_notional = self._window_reserved(key)
+            exposure[interval.name] = {
+                "window_sec": int(interval.window_sec),
+                "start_ts": start,
+                "end_ts": start + int(interval.window_sec),
+                "positions": len(self.positions_in_window(key)),
+                "notional_usd": round(
+                    self.window_open_notional(key), 4
+                ),
+                "reserved_positions": reserved_count,
+                "reserved_notional_usd": round(reserved_notional, 4),
+            }
         return {
             "ts": now_f,
             "iso": utc_iso(now_f),
@@ -1859,15 +2034,23 @@ class MultiAssetRunner:
             ),
             "max_positions_per_window": self.max_positions_per_window,
             "max_window_notional_usd": self.max_window_notional_usd,
-            "window_exposure": {
-                "start_ts": window_start,
-                "positions": len(self.positions_in_window(window_start)),
-                "notional_usd": round(
-                    self.window_open_notional(window_start), 4
-                ),
-                "reserved_positions": reserved_count,
-                "reserved_notional_usd": round(reserved_notional, 4),
+            "max_open_positions": self.max_open_positions,
+            "max_open_notional_usd": self.max_open_notional_usd,
+            "open_exposure": {
+                "count": global_count,
+                "notional_usd": round(global_notional, 4),
             },
+            "intervals": [
+                {
+                    "name": interval.name,
+                    "window_sec": int(interval.window_sec),
+                    "entry_window_end_s": float(
+                        interval.entry_window_end_s
+                    ),
+                }
+                for interval in self.settings.intervals
+            ],
+            "window_exposure": exposure,
             "same_side_open": {
                 "UP": self.same_side_open(Side.UP),
                 "DOWN": self.same_side_open(Side.DOWN),
@@ -1881,8 +2064,8 @@ class MultiAssetRunner:
                 day: stats.to_dict() for day, stats in sorted(self.daily.items())
             },
             "assets": {
-                asset: runner.snapshot(now_f)
-                for asset, runner in self.assets.items()
+                market: runner.snapshot(now_f)
+                for market, runner in self.markets.items()
             },
             "market_service": self.market_service.stats(),
         }
@@ -1922,6 +2105,7 @@ def _settle_orphan(
         pnl_net=pnl_net,
         stake_usd=pos.stake_usd,
         mode=mode,
+        interval=pos.interval,
         sl_price=pos.sl_price,
         entry_quote_mid=pos.entry_quote_mid,
         entry_quote_bid=pos.entry_quote_bid,

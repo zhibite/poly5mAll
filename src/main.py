@@ -10,13 +10,13 @@ Validate config and print the fee economics without connecting::
 
     python -m src.main --check
 
-Probe the live 5m markets for all seven assets::
+Probe the live 5m and 15m markets for all configured coins::
 
     python -m src.main --probe
 
-Run only BTC/ETH for 10 minutes::
+Run only ETH/BNB for 10 minutes::
 
-    python -m src.main --assets BTC,ETH --duration 600
+    python -m src.main --assets ETH,BNB --duration 600
 
 Live trading requires BOTH ``PAPER_TRADING=false`` and ``LIVE_ENABLED=true``
 in .env (or ``--live``) plus valid CLOB credentials.
@@ -44,7 +44,7 @@ from src.infra.logging import configure_logging, get_logger
 from src.infra.timeutil import utc_hms
 from src.market.market_ws import MarketWSManager, PriceCache
 from src.market.pm_client import PolymarketClient
-from src.market.service import MarketService
+from src.market.service import MarketService, MarketSpec
 from src.runner import MultiAssetRunner
 from src.runtime_config import RuntimeConfig
 from src.store import StateStore
@@ -55,7 +55,7 @@ log = get_logger("main")
 
 def _parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     parser = argparse.ArgumentParser(
-        description="Polymarket 7-asset 5m rebound strategy"
+        description="Polymarket 6-coin 5m/15m rebound strategy"
     )
     parser.add_argument("--config", default=None, help="path to config.toml")
     mode = parser.add_mutually_exclusive_group()
@@ -74,7 +74,9 @@ def _parse_args(argv: list[str] | None = None) -> argparse.Namespace:
         "--check", action="store_true", help="validate config and exit"
     )
     parser.add_argument(
-        "--probe", action="store_true", help="print live 5m markets and exit"
+        "--probe",
+        action="store_true",
+        help="print live 5m/15m markets and exit",
     )
     parser.add_argument(
         "--flatten", action="store_true", help="sell open positions on shutdown"
@@ -153,16 +155,22 @@ async def _probe(settings: Settings) -> int:
         timeout_s=settings.feed.request_timeout_s,
     )
     try:
-        # Probe every configured asset, including disabled ones: the Web
+        # Probe every configured market, including disabled ones: the Web
         # config page may enable them later, so discovery should be verified.
-        names = [a.asset for a in settings.assets]
-        print(f"Probing {len(names)} asset(s) at {utc_hms(time.time())} UTC\n")
-        for asset in names:
+        names = [a.market for a in settings.assets]
+        print(f"Probing {len(names)} market(s) at {utc_hms(time.time())} UTC\n")
+        for asset_cfg in settings.assets:
             markets = await pm.get_asset_updown_markets(
-                asset, slug_interval="5m", window_sec=300, limit=4
+                asset_cfg.asset,
+                slug_interval=asset_cfg.interval,
+                window_sec=asset_cfg.window_sec,
+                limit=4,
             )
             if not markets:
-                print(f"{asset:5} no 5m market returned by Gamma")
+                print(
+                    f"{asset_cfg.label:9} no {asset_cfg.interval} market "
+                    "returned by Gamma"
+                )
                 continue
             for market in markets:
                 start = int(market.get("_window_start_ts") or 0)
@@ -172,8 +180,10 @@ async def _probe(settings: Settings) -> int:
                 up_mid = await pm.get_midpoint(up) if up else 0.0
                 down_mid = await pm.get_midpoint(down) if down else 0.0
                 print(
-                    f"{asset:5} {market.get('_event_slug', ''):32} "
-                    f"start={utc_hms(start)} up={up_mid:.3f} down={down_mid:.3f} "
+                    f"{asset_cfg.label:9} "
+                    f"{market.get('_event_slug', ''):34} "
+                    f"start={utc_hms(start)} up={up_mid:.3f} "
+                    f"down={down_mid:.3f} "
                     f"tok={up[:10]}../{down[:10]}.."
                 )
     finally:
@@ -236,7 +246,15 @@ async def _run(settings: Settings, duration_s: float = 0.0) -> int:
     cache = PriceCache()
     market_service = MarketService(
         pm,
-        window_sec=settings.general.window_sec,
+        specs=[
+            MarketSpec(
+                market=a.market,
+                asset=a.asset,
+                interval=a.interval,
+                window_sec=a.window_sec,
+            )
+            for a in settings.assets
+        ],
         pre_discovery_lead_s=settings.feed.pre_discovery_lead_s,
     )
     runtime = RuntimeConfig.from_settings(
@@ -303,10 +321,10 @@ async def _run(settings: Settings, duration_s: float = 0.0) -> int:
         if web is not None:
             await web.start()
         log.warning(
-            "mode={} live_available={} assets={} web={} — press Ctrl+C to stop",
+            "mode={} live_available={} markets={} web={} — press Ctrl+C to stop",
             broker.mode,
             broker.live_available,
-            ",".join(runner.assets),
+            ",".join(runner.markets),
             web.url if web is not None else "off",
         )
         await stop_event.wait()
@@ -359,7 +377,10 @@ def main(argv: list[str] | None = None) -> int:
             "fee_rates={}; active mode comes from the runtime config",
             settings.execution.stake_usd,
             ",".join(
-                f"{a.asset}:{a.taker_fee_rate:g}" for a in settings.assets
+                dict.fromkeys(
+                    f"{a.asset}:{a.taker_fee_rate:g}"
+                    for a in settings.assets
+                )
             ),
         )
         if (

@@ -1,4 +1,4 @@
-"""FastAPI backend for the 7-asset 5m bot.
+"""FastAPI backend for the 6-coin 5m/15m bot.
 
 Routes
 ------
@@ -78,7 +78,7 @@ def create_app(
     app = FastAPI(
         title="Poly5m All",
         version="0.1.0",
-        description="7-asset 5m rebound strategy backend",
+        description="6-coin 5m/15m rebound strategy backend",
         docs_url="/docs",
         redoc_url=None,
     )
@@ -243,7 +243,9 @@ def create_app(
                 line = fee_line(plan, include_fees=e.include_fees)
                 rows.append(
                     {
+                        "market": plan.market,
                         "asset": plan.asset,
+                        "interval": plan.interval,
                         "side": plan.side.value,
                         "taker_fee_rate": plan.taker_fee_rate,
                         "entry_thresh": plan.entry_thresh,
@@ -268,19 +270,23 @@ def create_app(
             return default if value is None else value
 
         fee_rows = _fee_rows()
-        fees_by_asset: dict[str, list[dict[str, Any]]] = {}
+        fees_by_market: dict[str, list[dict[str, Any]]] = {}
         for row in fee_rows:
-            fees_by_asset.setdefault(row["asset"], []).append(row)
+            fees_by_market.setdefault(row["market"], []).append(row)
 
-        fee_rates = {a.asset: a.taker_fee_rate for a in runtime.assets()}
+        fee_rates = {
+            a.market: a.taker_fee_rate for a in runtime.assets()
+        }
         assets: list[dict[str, Any]] = []
         for row in runtime.snapshot():
-            name = row["asset"]
-            fees = fees_by_asset.get(name, [])
+            market = row["market"]
+            fees = fees_by_market.get(market, [])
             assets.append(
                 {
                     **row,
-                    "taker_fee_rate": fee_rates.get(name, e.taker_fee_rate),
+                    "taker_fee_rate": fee_rates.get(
+                        market, e.taker_fee_rate
+                    ),
                     "effective_stake_usd": row["stake_usd"] or e.stake_usd,
                     "fees": fees,
                     "fee_negative": any(f["fee_negative"] for f in fees),
@@ -303,6 +309,12 @@ def create_app(
             "require_two_sided_book": e.require_two_sided_book,
             "min_entry_bid_depth_usd": e.min_entry_bid_depth_usd,
             "max_same_side_positions": e.max_same_side_positions,
+            "max_open_positions": risk_value(
+                "max_open_positions", e.max_open_positions
+            ),
+            "max_open_notional_usd": risk_value(
+                "max_open_notional_usd", e.max_open_notional_usd
+            ),
             "max_same_side_per_window": risk_value(
                 "max_same_side_per_window", e.max_same_side_per_window
             ),
@@ -336,13 +348,16 @@ def create_app(
                 "asset_perf_disable_pnl_usd",
                 e.asset_perf_disable_pnl_usd,
             ),
-            "timing": {
-                "window_sec": settings.general.window_sec,
-                "entry_window_end_s": settings.general.entry_window_end_s,
-                "tp_window_start_s": settings.general.tp_window_start_s,
-                "force_exit_s": settings.general.force_exit_s,
-                "force_exit_deadline_s": settings.general.force_exit_deadline_s,
-            },
+            "intervals": [
+                {
+                    "name": interval.name,
+                    "window_sec": int(interval.window_sec),
+                    "entry_window_end_s": float(
+                        interval.entry_window_end_s
+                    ),
+                }
+                for interval in settings.intervals
+            ],
             "assets": assets,
             "fee_lines": fee_rows,
             "version": runtime.version,

@@ -1,8 +1,9 @@
 """Window / clock helpers.
 
-All strategy timestamps are UTC epoch seconds.  5m Polymarket windows start
-on unix-second multiples of 300, so ``floor(now / 300) * 300`` is the slug
-epoch used by ``{asset}-updown-5m-{epoch}``.
+All strategy timestamps are UTC epoch seconds.  Polygon Up/Down windows
+start on unix-second multiples of their length: 300 for 5m
+(``{asset}-updown-5m-{epoch}``) and 900 for 15m
+(``{asset}-updown-15m-{epoch}``).
 """
 from __future__ import annotations
 

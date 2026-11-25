@@ -126,13 +126,21 @@ def test_config_defaults_and_update(client):
     assert r.status_code == 200
     data = r.json()
     assert data["version"] == 0  # empty runtime file
-    by_name = {a["asset"]: a for a in data["assets"]}
-    assert by_name["BTC"]["enabled"] is False
-    assert by_name["ETH"]["enabled"] is True
-    assert by_name["BTC"]["stop_loss_pct"] == pytest.approx(0.0)
+    by_name = {a["market"]: a for a in data["assets"]}
+    assert by_name["BTC-5M"]["enabled"] is False
+    assert by_name["BTC-15M"]["enabled"] is False
+    assert by_name["ETH-5M"]["enabled"] is True
+    assert by_name["ETH-15M"]["enabled"] is False
+    assert by_name["HYPE-15M"]["enabled"] is False
+    assert by_name["BTC-5M"]["stop_loss_pct"] == pytest.approx(0.0)
+    assert [i["name"] for i in data["intervals"]] == ["5m", "15m"]
+    assert data["intervals"][1]["window_sec"] == 900
+    assert data["intervals"][1]["entry_window_end_s"] == pytest.approx(180.0)
     assert data["web"]["port"] == 8033
-    assert data["max_intraday_drawdown_usd"] == pytest.approx(8.0)
+    assert data["max_intraday_drawdown_usd"] == pytest.approx(16.0)
     assert data["intraday_drawdown_pause_min"] == pytest.approx(60.0)
+    assert data["max_open_positions"] == 6
+    assert data["max_open_notional_usd"] == pytest.approx(10.0)
     assert data["max_positions_per_window"] == 3
     assert data["max_window_notional_usd"] == pytest.approx(6.0)
     assert data["asset_perf_lookback_days"] == pytest.approx(7.0)
@@ -140,9 +148,14 @@ def test_config_defaults_and_update(client):
     assert data["asset_perf_stake_mult"] == pytest.approx(0.5)
     assert data["asset_perf_disable_pnl_usd"] == pytest.approx(-6.0)
     assert data["taker_fee_rate"] == pytest.approx(0.01)
-    assert by_name["BTC"]["taker_fee_rate"] == pytest.approx(0.05)
-    assert by_name["ETH"]["taker_fee_rate"] == pytest.approx(0.01)
-    assert any(f["asset"] == "BTC" and f["side"] == "DOWN" for f in data["fee_lines"])
+    assert by_name["BTC-5M"]["taker_fee_rate"] == pytest.approx(0.05)
+    assert by_name["BTC-15M"]["taker_fee_rate"] == pytest.approx(0.05)
+    assert by_name["ETH-5M"]["taker_fee_rate"] == pytest.approx(0.01)
+    assert by_name["ETH-15M"]["taker_fee_rate"] == pytest.approx(0.01)
+    assert any(
+        f["market"] == "BTC-5M" and f["side"] == "DOWN"
+        for f in data["fee_lines"]
+    )
     assert all(
         f["taker_fee_rate"] == pytest.approx(0.05)
         for f in data["fee_lines"]
@@ -153,21 +166,21 @@ def test_config_defaults_and_update(client):
         "/api/config",
         json={
             "assets": {
-                "ETH": {
+                "ETH-15M": {
                     "enabled": True,
                     "sides": "DOWN",
                     "entry_thresh": 0.2,
                     "tp_pct": 0.3,
                     "stop_loss_pct": 0.15,
                     "stake_usd": 5,
-                    "force_exit_s": 120,
-                    "force_exit_deadline_s": 135,
                 }
             },
             "max_daily_loss_usd": 15,
             "max_same_side_per_window": 3,
             "max_intraday_drawdown_usd": 12,
             "intraday_drawdown_pause_min": 120,
+            "max_open_positions": 4,
+            "max_open_notional_usd": 8,
             "max_positions_per_window": 2,
             "max_window_notional_usd": 5,
             "asset_perf_lookback_days": 14,
@@ -181,29 +194,36 @@ def test_config_defaults_and_update(client):
     assert data["max_same_side_per_window"] == 3
     assert data["max_intraday_drawdown_usd"] == pytest.approx(12.0)
     assert data["intraday_drawdown_pause_min"] == pytest.approx(120.0)
+    assert data["max_open_positions"] == 4
+    assert data["max_open_notional_usd"] == pytest.approx(8.0)
     assert data["max_positions_per_window"] == 2
     assert data["max_window_notional_usd"] == pytest.approx(5.0)
     assert data["asset_perf_lookback_days"] == pytest.approx(14.0)
     assert data["asset_perf_min_pnl_usd"] == pytest.approx(-2.0)
     assert data["asset_perf_stake_mult"] == pytest.approx(0.25)
     assert data["asset_perf_disable_pnl_usd"] == pytest.approx(-9.0)
-    by_name = {a["asset"]: a for a in data["assets"]}
-    assert by_name["ETH"]["enabled"] is True
-    assert by_name["ETH"]["entry_thresh"] == pytest.approx(0.2)
-    assert by_name["ETH"]["stop_loss_pct"] == pytest.approx(0.15)
-    assert by_name["ETH"]["stake_usd"] == pytest.approx(5.0)
-    assert by_name["ETH"]["force_exit_s"] == pytest.approx(120.0)
-    assert by_name["ETH"]["force_exit_deadline_s"] == pytest.approx(135.0)
+    by_name = {a["market"]: a for a in data["assets"]}
+    assert by_name["ETH-15M"]["enabled"] is True
+    assert by_name["ETH-15M"]["entry_thresh"] == pytest.approx(0.2)
+    assert by_name["ETH-15M"]["stop_loss_pct"] == pytest.approx(0.15)
+    assert by_name["ETH-15M"]["stake_usd"] == pytest.approx(5.0)
+    # Only the 15m market changed; the 5m row keeps its backtest params.
+    assert by_name["ETH-5M"]["entry_thresh"] == pytest.approx(0.06)
+    assert by_name["ETH-5M"]["stop_loss_pct"] == pytest.approx(0.10)
     assert data["max_daily_loss_usd"] == pytest.approx(15.0)
 
     r = client.post("/api/config/reset")
     assert r.status_code == 200
-    by_name = {a["asset"]: a for a in r.json()["assets"]}
-    assert by_name["ETH"]["enabled"] is True
-    assert by_name["BTC"]["enabled"] is False
+    by_name = {a["market"]: a for a in r.json()["assets"]}
+    assert by_name["ETH-5M"]["enabled"] is True
+    assert by_name["ETH-15M"]["enabled"] is False
+    assert by_name["BTC-5M"]["enabled"] is False
+    assert by_name["BTC-15M"]["enabled"] is False
     # The runtime fixture has no startup caps, so reset falls back to
     # config.toml defaults.
-    assert r.json()["max_intraday_drawdown_usd"] == pytest.approx(8.0)
+    assert r.json()["max_intraday_drawdown_usd"] == pytest.approx(16.0)
+    assert r.json()["max_open_positions"] == 6
+    assert r.json()["max_open_notional_usd"] == pytest.approx(10.0)
     assert r.json()["max_positions_per_window"] == 3
 
 
@@ -241,6 +261,8 @@ def test_trades_stats_and_filters(client):
     assert stats["total"]["losses"] == 1
     assert stats["total"]["net"] == pytest.approx(0.5)
     assert "BTC" in stats["by_asset"]
+    # Legacy rows without an interval field count as 5m.
+    assert stats["by_interval"]["5m"]["trades"] == 2
     assert stats["today"]["trades"] == 2
     tp = stats["tp_execution"]
     assert tp["tp_trades"] == 2

@@ -1,28 +1,49 @@
 ###############################################################################
-# 06.poly5mAll — 7-asset 5m Up/Down rebound strategy (strategy 1)
+# 06.poly5mAll — 6-coin 5m + 15m Up/Down rebound strategy (strategy 1)
 #
-# Parameters reproduce docs/all_5m_strategy1_summary.md §2 "生产推荐".
-# Strategy timeline (per 300 s window):
-#   0–60 s   observe + first touch of ENTRY_THRESH -> buy
-#   60–240 s take profit at entry_price * (1 + TP_PCT)
-#   240 s    forced exit at market (the doc's "240s SL single-point")
+# 12 configured markets = 6 coins x two timeframes.  Only the six 5m
+# markets are enabled by default: the 15m backtest was not good enough.
+# 15m is opt-in (src/config.py INTERVAL_DEFAULT_ENABLED); enable one market
+# on /config, or add a sub-table like:
+#   [ASSETS.ETH.15M]
+#   ENABLED = true
+# Entry/TP/SL parameters default to the coin-level [ASSETS.<NAME>] values;
+# each market can override them in its own sub-table (the 5m tables below).
+#
+# The [ASSETS.X.5M] sub-tables below carry the latest 5m backtest
+# ("absolute minimum drawdown + zero negative months" tier):
+#   entry / TP% / SL%
+#   ETH  0.06 / 15 / 10     BNB  0.06 / 15 / 10
+#   SOL  0.08 / 10 / 0      DOGE 0.06 / 15 / 10
+#   XRP  0.06 / 15 / 10     HYPE 0.10 / 10 / 10
+# The coin-level values remain the 15m defaults (no new 15m backtest yet).
+#
+# Strategy timeline:
+#   5m  market: 0-60 s   observe + first touch of ENTRY_THRESH -> buy
+#   15m market: 0-180 s  observe + first touch of ENTRY_THRESH -> buy
+#   from the fill until the window closes:
+#       take profit at fill_price * (1 + TP_PCT)
+#       price stop   at fill_price * (1 - STOP_LOSS_PCT) when > 0
+#   window close: no time-based forced exit.  Any remainder is held to
+#                 the Gamma 0/1 settlement.
 ###############################################################################
 
 [GENERAL]
-# 5m markets only.  Changing this without changing the strategy is not
-# supported: the 60/240 s boundaries are tied to a 300 s window.
-WINDOW_SEC = 300
-ENTRY_WINDOW_END_S = 60.0
-TP_WINDOW_START_S = 60.0
-FORCE_EXIT_S = 240.0
-# Retry a failed forced exit until this many seconds after window start.
-FORCE_EXIT_DEADLINE_S = 295.0
 # Strategy evaluation cadence.  The CLOB WS is event-driven on top of this.
 TICK_S = 0.25
 
+[INTERVALS.5M]
+WINDOW_SEC = 300
+ENTRY_WINDOW_END_S = 60
+
+[INTERVALS.15M]
+WINDOW_SEC = 900
+# Enter during the first 3 minutes of the 15m window.
+ENTRY_WINDOW_END_S = 180
+
 [FEED]
 # Price layer adapted from ../02.poly1h:
-#   * Gamma /events?slug=... for 5m market discovery
+#   * Gamma /events?slug=... for 5m/15m market discovery
 #   * CLOB market WebSocket for best bid/ask + last trade
 #   * CLOB /midpoint polled every REST_MIDPOINT_POLL_S as the stable fallback
 USE_WS = true
@@ -34,7 +55,7 @@ WS_SHARDS = 7
 BOOK_POLL_S = 3.0
 REST_MIDPOINT_POLL_S = 2.0
 MARKET_DISCOVERY_S = 2.0
-# Start looking for the next 5m window this many seconds before it opens.
+# Start looking for the next window this many seconds before it opens.
 PRE_DISCOVERY_LEAD_S = 60.0
 # A quote older than this cannot open a position.
 STALE_PRICE_MAX_AGE_S = 5.0
@@ -54,11 +75,10 @@ STAKE_USD = 2.0
 
 # Official Polymarket taker fee:
 #   fee = shares * rate * p * (1 - p)
-# Current crypto 5m schedule: BTC = 0.05, every other asset = 0.01.
+# Current crypto schedule: BTC = 0.05, every other asset = 0.01.
 # This value is the default for assets without their own TAKER_FEE_RATE
-# (see [ASSETS.BTC] below); makers pay 0.  The doc's backtest excludes
-# fees; keep INCLUDE_FEES=true for realistic paper PnL, or set it false
-# to reproduce the doc's gross numbers.
+# (see [ASSETS.BTC] below); makers pay 0.  Keep INCLUDE_FEES=true for
+# realistic paper PnL.
 TAKER_FEE_RATE = 0.01
 INCLUDE_FEES = true
 
@@ -69,7 +89,9 @@ INCLUDE_FEES = true
 #              bid (doc's option B); can fill below target.
 TP_EXECUTION_MODE = "observed"
 
-# Price stop-loss is retired (0 = off).  The 240s forced exit remains.
+# Per-market price stop as a fraction below the actual fill price, armed
+# from the fill (same time as TP).  0 = off.  Set per coin in
+# [ASSETS.<NAME>] STOP_LOSS_PCT or per market on /config.
 STOP_LOSS_PCT = 0.0
 
 # Entry liquidity gate: require both sides of the book and at least this
@@ -77,18 +99,25 @@ STOP_LOSS_PCT = 0.0
 REQUIRE_TWO_SIDED_BOOK = true
 MIN_ENTRY_BID_DEPTH_USD = 5.0
 
-# Max concurrent open positions with the same side across all assets.
+# Max concurrent open positions with the same side across all markets.
 MAX_SAME_SIDE_POSITIONS = 6
-# Max same-side entries inside one 5m window, across all assets.  Crypto
-# 5m markets are highly correlated: three UP entries in one window are
-# effectively one leveraged bet.  Earlier-window positions still awaiting
+# Global concurrent exposure across BOTH timeframes, both sides and all
+# markets.  Open positions plus in-flight entries count; positions waiting
+# for settlement still count.  0 disables each cap.  These are the aggregate
+# guards on top of the per-window caps below.  Editable on /config.
+MAX_OPEN_POSITIONS = 6
+MAX_OPEN_NOTIONAL_USD = 10.0
+# Max same-side entries inside one market window, across all markets on
+# that timeframe.  Crypto markets are highly correlated: several UP entries
+# in one window are effectively one leveraged bet.  The 5m and 15m windows
+# are counted separately.  Positions from earlier windows awaiting
 # settlement do not count.  0 disables the cap.
 MAX_SAME_SIDE_PER_WINDOW = 2
 
 # Retry cadence when a FAK order returns no fill.
 ENTRY_RETRY_S = 1.0
 EXIT_RETRY_S = 1.0
-# Forced-exit sell limit as a fraction below the current bid (2% = 2.0).
+# Marketable SELL limit as a fraction below the current bid (2% = 2.0).
 SLIPPAGE_PCT = 2.0
 
 # Optional microstructure filter: skip an entry when the absolute spread
@@ -98,26 +127,28 @@ SLIPPAGE_PCT = 2.0
 MAX_SPREAD_ABS = 0.01
 
 # Stop opening new positions once the UTC day's realized net PnL is at or
-# below -MAX_DAILY_LOSS_USD.  0 disables.  Editable on /config.
-MAX_DAILY_LOSS_USD = 20.0
+# below -MAX_DAILY_LOSS_USD.  0 disables.  Editable on /config.  Scaled for
+# the full 12-market configuration; with only the six 5m markets enabled
+# you may prefer the older 20U/8U values.
+MAX_DAILY_LOSS_USD = 40.0
 # Pause new entries when the UTC day's realized PnL falls this far below
 # its intraday high-water mark.  The pause lasts INTRADAY_DRAWDOWN_PAUSE_MIN
 # minutes (default 60; use 120 for 2 h), then entries resume and the
 # drawdown anchor is rebased to the PnL at resume time.  0 disables.
 # Editable on /config.
-MAX_INTRADAY_DRAWDOWN_USD = 8.0
+MAX_INTRADAY_DRAWDOWN_USD = 16.0
 INTRADAY_DRAWDOWN_PAUSE_MIN = 60.0
-# Total exposure per 5m window across BOTH sides and all assets.  Open
+# Total exposure per market window across BOTH sides and all markets on
+# that timeframe.  The 5m and 15m windows are counted separately.  Open
 # positions plus in-flight entries from earlier windows count only when
-# they belong to the same 5m window.  0 disables each cap.
-# Editable on /config.
+# they belong to the same window.  0 disables each cap.  Editable on /config.
 MAX_POSITIONS_PER_WINDOW = 3
 MAX_WINDOW_NOTIONAL_USD = 6.0
-# Per-asset rolling performance de-risking, computed from trades.jsonl.
+# Per-coin rolling performance de-risking, computed from trades.jsonl.
 # At or below ASSET_PERF_MIN_PNL_USD the entry stake is multiplied by
 # ASSET_PERF_STAKE_MULT; at or below ASSET_PERF_DISABLE_PNL_USD new
-# entries for that coin are skipped.  LOOKBACK_DAYS = 0 disables the rule.
-# Editable on /config.
+# entries for that coin are skipped on both timeframes.  LOOKBACK_DAYS = 0
+# disables the rule.  Editable on /config.
 ASSET_PERF_LOOKBACK_DAYS = 7.0
 ASSET_PERF_MIN_PNL_USD = -3.0
 ASSET_PERF_STAKE_MULT = 0.5
@@ -154,76 +185,115 @@ DATA_DIR = "data"
 LEVEL = "INFO"
 
 # ---------------------------------------------------------------------------
-# Per-asset forced-exit timing is optional.  The [GENERAL] values above are
-# the defaults; add FORCE_EXIT_S / FORCE_EXIT_DEADLINE_S to any [ASSETS.X]
-# table to override them per coin (the web /config page writes the same
-# fields).  If only FORCE_EXIT_S is set, the deadline defaults to
-# min(global deadline, FORCE_EXIT_S + 15s).  Example:
-#   [ASSETS.ETH]
-#   FORCE_EXIT_S = 120
-#   FORCE_EXIT_DEADLINE_S = 135
-#
-# ---------------------------------------------------------------------------
-# Per-asset production parameters (docs/all_5m_strategy1_summary.md §2)
+# Per-coin defaults for BOTH timeframes
 #
 # SIDES: "UP", "DOWN" or "BOTH" (two independent positions per window).
-# ENTRY_THRESH: first-touch threshold in the 0–60 s window.
+# ENTRY_THRESH: first-touch threshold inside the entry window
+#               (0-60 s for 5m, 0-180 s for 15m).
 # TP_PCT: take-profit fraction above the actual fill price.
+# STOP_LOSS_PCT: price-stop fraction below the fill (0 = off); per coin.
 #
-# The doc's direction study recommended DOWN (UP for XRP), but the operator
-# default in this project is BOTH for every asset.  Change per coin in
-# /config if you want one-sided trading.
+# Per-market overrides are optional.  Add a sub-table to change only that
+# timeframe, e.g.:
+#   [ASSETS.ETH.15M]
+#   ENTRY_THRESH = 0.20
+#   TP_PCT = 0.20
+#   STOP_LOSS_PCT = 0.25
+# The web /config page edits the same per-market values and persists them
+# in data/runtime_config.json.  ENABLED=false on a sub-table disables just
+# that timeframe; ENABLED=false on the coin disables both.
 #
-# Enabled set: the six non-BTC assets are on; BTC is off.  BTC's 5% taker
-# fee is still too expensive for the 0.25/10% TP over the 6-month recheck,
-# so it stays disabled until the fee or the parameters improve.
+# Enabled set: the six non-BTC coins run 5m only.  15m is off by default
+# (backtest not good enough) and can be enabled per market on /config or
+# with [ASSETS.X.15M] ENABLED=true.  BTC is off on both timeframes: its 5%
+# taker fee is still too expensive for the 0.25/10% TP over the 6-month
+# recheck, so it stays disabled until the fee or the parameters improve.
 # ---------------------------------------------------------------------------
 
 [ASSETS.BTC]
-ENABLED = false  # BTC 5m 费率 5%，6 个月复测费后仍亏损，默认关闭
+ENABLED = false  # BTC 费率 5%，6 个月复测费后仍亏损，5m/15m 均默认关闭
 SIDES = "BOTH"
 ENTRY_THRESH = 0.25
 TP_PCT = 0.10
-# Official BTC 5m taker fee is 5% (other crypto 5m markets are 1%).
+# Official BTC taker fee is 5% (other crypto markets are 1%).
 TAKER_FEE_RATE = 0.05
-# Backtest: BTC 0.25/10% benefits from a 20% stop.
 
 [ASSETS.ETH]
 ENABLED = true
-# ETH comes from the older both-sides report; 0.18 is the reported sweet spot.
+# Coin-level values are the current 15m defaults.
 SIDES = "BOTH"
 ENTRY_THRESH = 0.18
 TP_PCT = 0.15
-# Low entry: the 20% stop tested worse; keep it off.
+
+# Latest 5m backtest: minimum-drawdown tier (entry 0.06 / TP 15% / SL 10%).
+[ASSETS.ETH.5M]
+ENTRY_THRESH = 0.06
+TP_PCT = 0.15
+STOP_LOSS_PCT = 0.10
 
 [ASSETS.BNB]
 ENABLED = true
+# Coin-level values are the current 15m defaults.
 SIDES = "BOTH"
 ENTRY_THRESH = 0.15
 TP_PCT = 0.10
 
+# Latest 5m backtest: minimum-drawdown tier (entry 0.06 / TP 15% / SL 10%).
+[ASSETS.BNB.5M]
+ENTRY_THRESH = 0.06
+TP_PCT = 0.15
+STOP_LOSS_PCT = 0.10
+
 [ASSETS.SOL]
 ENABLED = true
+# Coin-level values are the current 15m defaults.
 SIDES = "BOTH"
 ENTRY_THRESH = 0.15
 TP_PCT = 0.20
 
+# Latest 5m backtest: minimum-drawdown tier (entry 0.08 / TP 10% / SL 0).
+[ASSETS.SOL.5M]
+ENTRY_THRESH = 0.08
+TP_PCT = 0.10
+STOP_LOSS_PCT = 0.0
+
 [ASSETS.DOGE]
 ENABLED = true
+# Coin-level values are the current 15m defaults.
 SIDES = "BOTH"
 ENTRY_THRESH = 0.12
 TP_PCT = 0.25
 
+# Latest 5m backtest: minimum-drawdown tier (entry 0.06 / TP 15% / SL 10%).
+[ASSETS.DOGE.5M]
+ENTRY_THRESH = 0.06
+TP_PCT = 0.15
+STOP_LOSS_PCT = 0.10
+
 [ASSETS.XRP]
 ENABLED = true
-# Doc §4.3 found an UP advantage; the operator default here is BOTH.
+# Coin-level values are the current 15m defaults.  Doc §4.3 found an UP
+# advantage; the operator default here is BOTH.
 SIDES = "BOTH"
 ENTRY_THRESH = 0.10
 TP_PCT = 0.25
 
+# Latest 5m backtest: minimum-drawdown tier (entry 0.06 / TP 15% / SL 10%).
+[ASSETS.XRP.5M]
+ENTRY_THRESH = 0.06
+TP_PCT = 0.15
+STOP_LOSS_PCT = 0.10
+
 [ASSETS.HYPE]
 ENABLED = true
-# Operator override: 0.14/25% (the doc's 0.30/10% was the original top-1).
+# Coin-level values are the current 15m defaults.  Operator override for
+# 15m: 0.14/25% (the doc's 0.30/10% was the original top-1).
 SIDES = "BOTH"
 ENTRY_THRESH = 0.14
 TP_PCT = 0.25
+
+# Latest 5m backtest: minimum-drawdown tier (entry 0.10 / TP 10% / SL 10%).
+[ASSETS.HYPE.5M]
+ENTRY_THRESH = 0.10
+TP_PCT = 0.10
+STOP_LOSS_PCT = 0.10

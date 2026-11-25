@@ -5,7 +5,7 @@ build-backend = "setuptools.build_meta"
 [project]
 name = "poly5m-all"
 version = "0.1.0"
-description = "Polymarket 7-asset 5m Up/Down rebound strategy (strategy 1)"
+description = "Polymarket 6-coin 5m/15m Up/Down rebound strategy (strategy 1)"
 requires-python = ">=3.11"
 dependencies = [
     "websockets>=12",

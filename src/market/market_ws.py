@@ -463,10 +463,10 @@ def _float(value: Any) -> float:
 class MarketWSManager:
     """Hash-shard the CLOB market WS across independent connections.
 
-    One connection carrying all seven assets was regularly reset with
+    One connection carrying every market token was regularly reset with
     ``1013 slow consumer: send buffer full``.  Tokens are assigned to a
     fixed shard by their token id, so each connection subscribes to a
-    smaller subset and one bad shard cannot take down every asset.
+    smaller subset and one bad shard cannot take down every market.
     """
 
     def __init__(

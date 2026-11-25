@@ -4,7 +4,7 @@ import dataclasses
 
 import pytest
 
-from src.config import ExecutionConfig, FeedConfig, GeneralConfig
+from src.config import ExecutionConfig, FeedConfig
 from src.models import (
     Fill,
     MarketWindow,
@@ -49,103 +49,172 @@ def _quote(now: float, mid: float, bid: float = 0.0, ask: float = 0.0) -> Quote:
     )
 
 
-def test_per_asset_force_exit_time_controls_phase():
-    plan = dataclasses.replace(
-        _plan(), force_exit_s=120.0, force_exit_deadline_s=135.0
-    )
-    side = SideRuntime(plan, _window())
-    g = GeneralConfig()
+def test_phase_uses_the_market_timeframe():
+    side5 = SideRuntime(_plan(), _window())
+    assert side5.phase(T0 + 100) is Phase.TP
+    assert side5.phase(T0 + 300) is Phase.ENDED
 
-    assert side.phase(T0 + 100, g) is Phase.TP
-    assert side.phase(T0 + 125, g) is Phase.FORCE_EXIT
-    assert side.phase(T0 + 140, g) is Phase.ENDED
-    assert side.deadline_passed(T0 + 140, g) is False  # not HOLDING
+    plan15 = dataclasses.replace(
+        _plan(), interval="15m", window_sec=900, entry_window_end_s=180.0
+    )
+    window15 = dataclasses.replace(
+        _window(),
+        slug=f"btc-updown-15m-{T0}",
+        end_ts=T0 + 900,
+        interval="15m",
+    )
+    side15 = SideRuntime(plan15, window15)
+    assert side15.phase(T0 + 100) is Phase.ENTRY
+    assert side15.phase(T0 + 181) is Phase.TP
+    assert side15.phase(T0 + 900) is Phase.ENDED
 
 
 def test_entry_only_in_first_60s():
     side = SideRuntime(_plan(), _window())
-    g, e, f = GeneralConfig(), ExecutionConfig(), FeedConfig()
+    e, f = ExecutionConfig(), FeedConfig()
 
-    assert side.entry_block_reason(T0 + 10, _quote(T0 + 10, 0.24), g, e, f) is None
+    assert side.entry_block_reason(T0 + 10, _quote(T0 + 10, 0.24), e, f) is None
     assert (
-        side.entry_block_reason(T0 + 61, _quote(T0 + 61, 0.10), g, e, f)
+        side.entry_block_reason(T0 + 61, _quote(T0 + 61, 0.10), e, f)
         == "outside-entry-window"
     )
     assert (
-        side.entry_block_reason(T0 + 10, _quote(T0 + 10, 0.30), g, e, f)
+        side.entry_block_reason(T0 + 10, _quote(T0 + 10, 0.30), e, f)
         == "above-threshold"
+    )
+
+
+def test_15m_entry_window_is_three_minutes():
+    plan = dataclasses.replace(
+        _plan(), interval="15m", window_sec=900, entry_window_end_s=180.0
+    )
+    window = dataclasses.replace(
+        _window(),
+        slug=f"btc-updown-15m-{T0}",
+        end_ts=T0 + 900,
+        interval="15m",
+    )
+    side = SideRuntime(plan, window)
+    e, f = ExecutionConfig(), FeedConfig()
+    assert side.entry_block_reason(
+        T0 + 170, _quote(T0 + 170, 0.24), e, f
+    ) is None
+    assert (
+        side.entry_block_reason(T0 + 181, _quote(T0 + 181, 0.10), e, f)
+        == "outside-entry-window"
     )
 
 
 def test_stale_quote_blocks_entry():
     side = SideRuntime(_plan(), _window())
-    g, e, f = GeneralConfig(), ExecutionConfig(), FeedConfig()
+    e, f = ExecutionConfig(), FeedConfig()
     quote = Quote(
         token_id="down-token", mid=0.20, bid=0.19, ask=0.21,
         last=0.20, updated_at=T0, source="ws_bba",
     )
     assert (
-        side.entry_block_reason(T0 + 30, quote, g, e, f) == "stale-price"
+        side.entry_block_reason(T0 + 30, quote, e, f) == "stale-price"
     )
 
 
 def test_wide_spread_and_missing_bbo_block_entry():
     side = SideRuntime(_plan(), _window())
-    g, f = GeneralConfig(), FeedConfig()
+    f = FeedConfig()
     e = ExecutionConfig(max_spread_abs=0.01)
 
     wide = _quote(T0 + 10, 0.23, bid=0.22, ask=0.24)  # spread 0.02
-    assert side.entry_block_reason(T0 + 10, wide, g, e, f) == "wide-spread"
+    assert side.entry_block_reason(T0 + 10, wide, e, f) == "wide-spread"
 
     # Missing BBO must not silently pass the spread filter.
     no_bbo = _quote(T0 + 10, 0.23, bid=0.0, ask=0.0)
-    assert side.entry_block_reason(T0 + 10, no_bbo, g, e, f) == "wide-spread"
+    assert side.entry_block_reason(T0 + 10, no_bbo, e, f) == "wide-spread"
 
     tight = _quote(T0 + 10, 0.24, bid=0.235, ask=0.245)  # spread 0.01
-    assert side.entry_block_reason(T0 + 10, tight, g, e, f) is None
+    assert side.entry_block_reason(T0 + 10, tight, e, f) is None
 
 
-def test_tp_waits_until_60s_and_uses_bid():
+def test_tp_starts_at_entry_and_uses_bid():
     side = SideRuntime(_plan(), _window())
-    g, e, f = GeneralConfig(), ExecutionConfig(), FeedConfig()
+    e, f = ExecutionConfig(), FeedConfig()
     fill = Fill("down-token", "BUY", 41.6667, 10.0, 0.24, 0.0, T0 + 10)
     pos = side.on_entry_fill(fill, T0 + 10, e)
     assert pos.tp_price == pytest.approx(0.264)
     assert side.status is SideStatus.HOLDING
 
-    high = _quote(T0 + 55, 0.30, bid=0.30, ask=0.31)
-    assert not side.tp_due(T0 + 55, high, g, e, f)
-    assert side.tp_due(T0 + 60, high, g, e, f)
+    # TP is armed by the fill, not by a fixed 60 s window boundary.
+    high = _quote(T0 + 20, 0.30, bid=0.30, ask=0.31)
+    assert side.tp_due(T0 + 20, high, e, f)
 
     # Mid above target but the executable bid is below it: no TP yet.
     wide = _quote(T0 + 70, 0.30, bid=0.25, ask=0.31)
-    assert not side.tp_due(T0 + 70, wide, g, e, f)
+    assert not side.tp_due(T0 + 70, wide, e, f)
+
+
+def test_sl_armed_at_entry_and_uses_bid():
+    plan = dataclasses.replace(_plan(), stop_loss_pct=0.5)
+    side = SideRuntime(plan, _window())
+    e, f = ExecutionConfig(), FeedConfig()
+    fill = Fill("down-token", "BUY", 41.6667, 10.0, 0.24, 0.0, T0 + 10)
+    pos = side.on_entry_fill(fill, T0 + 10, e)
+    assert pos.sl_price == pytest.approx(0.12)
+
+    # Still above the stop line: no exit.
+    assert not side.sl_due(
+        T0 + 20, _quote(T0 + 20, 0.20, bid=0.20, ask=0.21), e, f
+    )
+    # Bid touches the line 10 s after the fill; no 60 s wait.
+    assert side.sl_due(
+        T0 + 20, _quote(T0 + 20, 0.11, bid=0.11, ask=0.12), e, f
+    )
+    # Mid below the line but the executable bid is above it: no trigger.
+    assert not side.sl_due(
+        T0 + 30, _quote(T0 + 30, 0.11, bid=0.13, ask=0.14), e, f
+    )
+    # The stop runs until the 5m window closes; after that settlement
+    # takes over, not another sell attempt.
+    assert side.sl_due(
+        T0 + 299, _quote(T0 + 299, 0.01, bid=0.01, ask=0.02), e, f
+    )
+    assert not side.sl_due(
+        T0 + 300, _quote(T0 + 300, 0.01, bid=0.01, ask=0.02), e, f
+    )
+
+
+def test_stop_loss_off_by_default():
+    side = SideRuntime(_plan(), _window())
+    e = ExecutionConfig()
+    fill = Fill("down-token", "BUY", 40.0, 10.0, 0.25, 0.0, T0 + 10)
+    pos = side.on_entry_fill(fill, T0 + 10, e)
+    assert pos.sl_price == 0.0
 
 
 def test_tp_trigger_modes():
     side = SideRuntime(_plan(), _window())
-    g, e, f = GeneralConfig(), ExecutionConfig(), FeedConfig()
+    e, f = ExecutionConfig(), FeedConfig()
     fill = Fill("down-token", "BUY", 40.0, 10.0, 0.25, 0.0, T0 + 10)
     side.on_entry_fill(fill, T0 + 10, e)
     # Mid is above target, but the executable bid is still below it.
     quote = _quote(T0 + 70, 0.276, bid=0.20, ask=0.35)
-    assert not side.tp_due(T0 + 70, quote, g, e, f, mode="observed")
-    assert side.tp_due(T0 + 70, quote, g, e, f, mode="market")
+    assert not side.tp_due(T0 + 70, quote, e, f, mode="observed")
+    assert side.tp_due(T0 + 70, quote, e, f, mode="market")
 
 
-def test_force_exit_after_240s():
+def test_no_forced_exit_at_the_old_240s_mark():
     side = SideRuntime(_plan(), _window())
-    g, e, f = GeneralConfig(), ExecutionConfig(), FeedConfig()
+    e, f = ExecutionConfig(), FeedConfig()
     fill = Fill("down-token", "BUY", 41.6667, 10.0, 0.24, 0.0, T0 + 10)
     side.on_entry_fill(fill, T0 + 10, e)
-    assert not side.force_exit_due(T0 + 239, g, e)
-    assert side.force_exit_due(T0 + 240, g, e)
-    assert side.deadline_passed(T0 + 296, g)
+    quote = _quote(T0 + 240, 0.20, bid=0.20, ask=0.21)
+    # No time-based exit: only TP/SL can close it before the window end.
+    assert not side.tp_due(T0 + 240, quote, e, f)
+    assert not side.sl_due(T0 + 240, quote, e, f)
+    assert side.window_ended(T0 + 300)
+    assert not side.window_ended(T0 + 299)
 
 
 def test_full_exit_books_net_pnl():
     side = SideRuntime(_plan(), _window())
-    g, e, f = GeneralConfig(), ExecutionConfig(), FeedConfig()
+    e = ExecutionConfig()
     entry = Fill("down-token", "BUY", 40.0, 10.0, 0.25, 0.10, T0 + 10)
     pos = side.on_entry_fill(entry, T0 + 10, e)
 

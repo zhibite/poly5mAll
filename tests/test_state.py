@@ -46,7 +46,30 @@ def test_state_roundtrip(tmp_path):
     assert positions[0].entry_quote_spread == pytest.approx(0.01)
     assert positions[0].entry_quote_source == "ws_bba"
     assert positions[0].entry_quote_ts == pytest.approx(1_800_000_010.0)
+    assert positions[0].interval == "5m"
+    assert positions[0].market == "BTC-5M"
     assert loaded_daily["2026-11-04"].realized_pnl == 1.2
+
+
+def test_position_without_interval_is_treated_as_5m():
+    raw = _position().to_dict()
+    raw.pop("interval")
+    pos = Position.from_dict(raw)
+    assert pos.interval == "5m"
+    assert pos.window_sec == 300
+    assert pos.market == "BTC-5M"
+
+
+def test_15m_position_roundtrip(tmp_path):
+    pos = _position()
+    pos.interval = "15m"
+    pos.window_end = pos.window_start + 900
+    store = StateStore(tmp_path)
+    store.save([pos], {})
+    loaded, _ = store.load()
+    assert loaded[0].interval == "15m"
+    assert loaded[0].window_sec == 900
+    assert loaded[0].market == "BTC-15M"
 
 
 def test_daily_stats_peak_pnl_roundtrip_and_legacy(tmp_path):

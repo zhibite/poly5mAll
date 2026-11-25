@@ -4,8 +4,9 @@ Polymarket's taker fee is
 
     fee = shares * fee_rate * p * (1 - p)
 
-with a market-specific rate: 0.05 (5%) on BTC 5m markets and 0.01 (1%) on
-the other crypto 5m markets.  Makers pay zero.  The formula is maximised
+with a market-specific rate: 0.05 (5%) on BTC markets and 0.01 (1%) on
+the other crypto markets (5m and 15m default to the same schedule).
+Makers pay zero.  The formula is maximised
 at p = 0.5, so a round trip is still expensive relative to the 10–25% TP
 targets used by strategy 1.  The doc's backtest excludes fees; this module
 makes the cost visible before a single order is sent.
@@ -59,10 +60,12 @@ class FeeLine:
     net_per_trade: float
     net_roi: float
     breakeven_tp: float | None
+    market: str = ""
+    interval: str = "5m"
 
     @property
     def key(self) -> str:
-        return f"{self.asset}-{self.side}"
+        return f"{self.market or self.asset}-{self.side}"
 
     @property
     def fee_negative(self) -> bool:
@@ -101,6 +104,8 @@ def fee_line(
         asset=plan.asset,
         side=plan.side.value,
         fee_rate=rate,
+        market=plan.market,
+        interval=plan.interval,
         entry=p,
         tp_pct=tp_pct,
         tp_price=tp_price,
@@ -154,15 +159,16 @@ def fee_table(plans: list[SidePlan], *, include_fees: bool = True,
     """
     lines = [
         "Per-trade TP economics (1 share basis; doc params, taker fees):",
-        "asset side   fee  entry   tp%    tp$    gross    fees     net  net/trade  be_tp",
-        "------------------------------------------------------------------------------------",
+        "market    side   fee  entry   tp%    tp$    gross    fees     net  net/trade  be_tp",
+        "-------------------------------------------------------------------------------------",
     ]
     for plan in plans:
         ln = fee_line(plan, include_fees=include_fees, fee_rate=fee_rate)
         be = "n/a" if ln.breakeven_tp is None else f"{ln.breakeven_tp*100:5.1f}%"
         flag = "  <-- FEE-NEGATIVE" if ln.fee_negative and include_fees else ""
+        label = ln.market or ln.asset
         lines.append(
-            f"{ln.asset:5} {ln.side:4} {ln.fee_rate*100:4.1f}% {ln.entry:6.3f} "
+            f"{label:8} {ln.side:4} {ln.fee_rate*100:4.1f}% {ln.entry:6.3f} "
             f"{ln.tp_pct*100:5.0f} {ln.tp_price:6.3f} "
             f"{ln.gross_per_share:7.4f} "
             f"{ln.entry_fee_per_share + ln.exit_fee_per_share:7.4f} "

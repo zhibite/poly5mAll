@@ -1,13 +1,14 @@
-"""Strategy 1 (rebound) — per asset/side state machine.
+"""Strategy 1 (rebound) — per market/side state machine.
 
-The doc's timeline, implemented literally:
+Two timeframes share the same logic; only the window length and the
+entry window differ:
 
-    t = 0              market opens
-    0 <= t <= 60 s     observe; first touch of entry_thresh -> BUY
-    60 < t < 240 s     first touch of entry_price * (1 + tp_pct) -> SELL
-    t >= 240 s         forced exit at market (the doc's "240s SL")
-    t > 295 s          market exit deadline; leave to settlement if the
-                       book is still empty
+    5m:   t = 0 market opens; 0 <= t <= 60 s entry; TP/SL until t = 300 s
+    15m:  t = 0 market opens; 0 <= t <= 180 s entry; TP/SL until t = 900 s
+
+TP and SL are armed at the actual fill and run until the window closes.
+There is no forced time exit: any remainder left at the close goes to
+Gamma settlement (0/1 payout).
 
 The class is pure: it never talks to the network.  ``runner.py`` supplies a
 ``Quote`` and a ``Fill``, and the state machine decides whether an action
@@ -17,7 +18,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 
-from src.config import ExecutionConfig, FeedConfig, GeneralConfig
+from src.config import ExecutionConfig, FeedConfig
 from src.models import (
     SIZE_PRECISION,
     Fill,
@@ -40,22 +41,31 @@ class SideRuntime:
     last_entry_attempt: float = 0.0
     last_exit_attempt: float = 0.0
     last_tick_refresh: float = 0.0
+    # After a partial SELL the CLOB keeps the matched shares locked for a
+    # moment; retrying the full remainder immediately is rejected with
+    # "not enough balance / allowance".  Hold the next sell until then.
+    exit_cooldown_until: float = 0.0
     entry_attempts: int = 0
     exit_attempts: int = 0
     closed_reason: str = ""
     last_reason: str = ""
 
     # ── timing ─────────────────────────────────────────────────────────
-    def phase(self, now: float, general: GeneralConfig) -> Phase:
+    def phase(self, now: float) -> Phase:
         t = self.window.seconds_since(now)
         if t < 0:
             return Phase.PRE
-        if t <= general.entry_window_end_s:
+        if t <= self.plan.entry_window_end_s:
+            # TP/SL are armed at the fill, so a held position is already
+            # in its management phase even inside the entry window.
+            if (
+                self.position is not None
+                and self.status in (SideStatus.HOLDING, SideStatus.EXITING)
+            ):
+                return Phase.TP
             return Phase.ENTRY
-        if t < self.plan.force_exit_s:
+        if t < self.window.window_sec:
             return Phase.TP
-        if t <= self.plan.force_exit_deadline_s:
-            return Phase.FORCE_EXIT
         return Phase.ENDED
 
     # ── entry ──────────────────────────────────────────────────────────
@@ -63,14 +73,13 @@ class SideRuntime:
         self,
         now: float,
         quote: Quote | None,
-        general: GeneralConfig,
         execution: ExecutionConfig,
         feed: FeedConfig,
     ) -> str | None:
         """None when an entry is due, otherwise a short skip reason."""
         if self.status is not SideStatus.WAITING:
             return "not-waiting"
-        if self.phase(now, general) is not Phase.ENTRY:
+        if self.phase(now) is not Phase.ENTRY:
             return "outside-entry-window"
         if now - self.last_entry_attempt < execution.entry_retry_s:
             return "retry-backoff"
@@ -96,15 +105,20 @@ class SideRuntime:
         self,
         now: float,
         quote: Quote | None,
-        general: GeneralConfig,
         execution: ExecutionConfig,
         feed: FeedConfig,
         mode: str = "observed",
     ) -> bool:
         if self.status is not SideStatus.HOLDING or self.position is None:
             return False
+        if now < self.position.entry_ts:
+            return False
+        if now < self.exit_cooldown_until:
+            return False
+        # The TP target is armed at the fill; the window close caps its
+        # lifetime (any remainder then settles at the Gamma outcome).
         t = self.window.seconds_since(now)
-        if t < general.tp_window_start_s or t >= general.force_exit_s:
+        if t >= self.window.window_sec:
             return False
         if now - self.last_exit_attempt < execution.exit_retry_s:
             return False
@@ -121,24 +135,44 @@ class SideRuntime:
             trigger = quote.bid if quote.bid > 0 else quote.mid
         return trigger >= self.position.tp_price
 
-    # ── forced exit ────────────────────────────────────────────────────
-    def force_exit_due(
-        self, now: float, general: GeneralConfig, execution: ExecutionConfig
+    # ── price stop ─────────────────────────────────────────────────────
+    def sl_due(
+        self,
+        now: float,
+        quote: Quote | None,
+        execution: ExecutionConfig,
+        feed: FeedConfig,
     ) -> bool:
+        """Price stop armed at the fill and active until the window ends.
+
+        Triggers on the executable bid (falling back to mid when no BBO is
+        available).  A 0 ``sl_price`` means the stop is off for this side.
+        """
         if self.status is not SideStatus.HOLDING or self.position is None:
             return False
+        if self.position.sl_price <= 0:
+            return False
+        if now < self.position.entry_ts:
+            return False
+        if now < self.exit_cooldown_until:
+            return False
         t = self.window.seconds_since(now)
-        if t < self.plan.force_exit_s:
+        if t >= self.window.window_sec:
             return False
-        if t > self.plan.force_exit_deadline_s:
+        if now - self.last_exit_attempt < execution.exit_retry_s:
             return False
-        return now - self.last_exit_attempt >= execution.exit_retry_s
+        if quote is None or quote.age(now) > feed.exit_stale_price_max_age_s:
+            return False
+        trigger = quote.bid if quote.bid > 0 else quote.mid
+        return trigger <= self.position.sl_price
 
-    def deadline_passed(self, now: float, general: GeneralConfig) -> bool:
+    # ── window end ─────────────────────────────────────────────────────
+    def window_ended(self, now: float) -> bool:
+        """The market closed with this position still open."""
         return (
-            self.status is SideStatus.HOLDING
-            and self.window.seconds_since(now)
-            > self.plan.force_exit_deadline_s
+            self.position is not None
+            and not self.position.is_flat
+            and self.window.seconds_since(now) >= self.window.window_sec
         )
 
     # ── bookings ───────────────────────────────────────────────────────
@@ -147,8 +181,12 @@ class SideRuntime:
     ) -> Position:
         if fill.price <= 0 or fill.price >= 1 or fill.shares <= 0:
             raise ValueError(f"invalid entry fill: {fill}")
+        interval = self.plan.interval or self.window.interval
         position = Position(
-            position_id=f"{self.plan.asset}-{self.plan.side.value}-{self.window.start_ts}",
+            position_id=(
+                f"{self.plan.asset}-{interval.upper()}-"
+                f"{self.plan.side.value}-{self.window.start_ts}"
+            ),
             asset=self.plan.asset,
             side=self.plan.side,
             window_start=self.window.start_ts,
@@ -157,12 +195,17 @@ class SideRuntime:
             token_id=self.window.token(self.plan.side),
             exchange_position_id=self.window.position(self.plan.side),
             entry_ts=now,
+            interval=interval,
             entry_price=float(fill.price),
             shares=float(fill.shares),
             cost_usd=float(fill.usdc),
             entry_fee=float(fill.fee),
             tp_price=float(fill.price) * (1.0 + self.plan.tp_pct),
-            sl_price=0.0,
+            sl_price=(
+                float(fill.price) * (1.0 - self.plan.stop_loss_pct)
+                if 0.0 < self.plan.stop_loss_pct < 1.0
+                else 0.0
+            ),
             stake_usd=float(self.plan.stake_usd),
             up_token=self.window.up_token,
             down_token=self.window.down_token,
@@ -286,6 +329,7 @@ class SideRuntime:
             pnl_net=pnl_net,
             stake_usd=position.stake_usd,
             mode=mode,
+            interval=position.interval,
             sl_price=position.sl_price,
             tp_observed_price=position.tp_observed_price if observed else 0.0,
             tp_observed_bid=position.tp_observed_bid if observed else 0.0,
@@ -361,6 +405,7 @@ class SideRuntime:
             pnl_net=pnl_net,
             stake_usd=position.stake_usd,
             mode=mode,
+            interval=position.interval,
             sl_price=position.sl_price,
             tp_observed_price=position.tp_observed_price if observed else 0.0,
             tp_observed_bid=position.tp_observed_bid if observed else 0.0,
@@ -385,9 +430,9 @@ class SideRuntime:
         mid = quote.mid if quote is not None else self.position.entry_price
         return self.position.unrealized_pnl(mid)
 
-    def describe(self, now: float, general: GeneralConfig, quote: Quote | None) -> str:
+    def describe(self, now: float, quote: Quote | None) -> str:
         t = self.window.seconds_since(now)
-        phase = self.phase(now, general).value
+        phase = self.phase(now).value
         mid = f"{quote.mid:.3f}" if quote is not None else "---"
         if self.position is None:
             return (
