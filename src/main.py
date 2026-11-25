@@ -239,15 +239,8 @@ async def _run(settings: Settings, duration_s: float = 0.0) -> int:
         window_sec=settings.general.window_sec,
         pre_discovery_lead_s=settings.feed.pre_discovery_lead_s,
     )
-    runtime = RuntimeConfig(
-        settings.data_dir / "runtime_config.json",
-        settings.assets,
-        default_mode=settings.mode,
-        live_allowed=settings.live,
-        max_daily_loss_usd=settings.execution.max_daily_loss_usd,
-        max_same_side_per_window=(
-            settings.execution.max_same_side_per_window
-        ),
+    runtime = RuntimeConfig.from_settings(
+        settings.data_dir / "runtime_config.json", settings
     )
     broker = await _build_broker(settings, pm, cache, runtime)
     if broker.is_live and broker.live is not None:

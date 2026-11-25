@@ -40,6 +40,13 @@ def test_doc_defaults_load():
     assert s.execution.max_same_side_positions == 6
     assert s.execution.max_same_side_per_window == 2
     assert s.execution.max_daily_loss_usd == pytest.approx(20.0)
+    assert s.execution.max_intraday_drawdown_usd == pytest.approx(8.0)
+    assert s.execution.max_positions_per_window == 3
+    assert s.execution.max_window_notional_usd == pytest.approx(6.0)
+    assert s.execution.asset_perf_lookback_days == pytest.approx(7.0)
+    assert s.execution.asset_perf_min_pnl_usd == pytest.approx(-3.0)
+    assert s.execution.asset_perf_stake_mult == pytest.approx(0.5)
+    assert s.execution.asset_perf_disable_pnl_usd == pytest.approx(-6.0)
     assert s.feed.ws_shards == 7
     assert s.feed.book_poll_s == pytest.approx(3.0)
     assert s.mode == "paper"
@@ -89,6 +96,19 @@ def test_invalid_threshold_rejected():
     bad = dataclasses.replace(s, assets=(bad_asset,))
     with pytest.raises(ConfigError):
         validate_settings(bad)
+
+
+def test_invalid_risk_caps_rejected():
+    s = load_settings()
+    for bad_exec in (
+        dataclasses.replace(s.execution, asset_perf_stake_mult=1.5),
+        dataclasses.replace(s.execution, max_intraday_drawdown_usd=-1.0),
+        dataclasses.replace(s.execution, max_positions_per_window=-1),
+        dataclasses.replace(s.execution, max_window_notional_usd=-1.0),
+        dataclasses.replace(s.execution, asset_perf_lookback_days=-1.0),
+    ):
+        with pytest.raises(ConfigError):
+            validate_settings(dataclasses.replace(s, execution=bad_exec))
 
 
 def test_per_asset_fee_rates():

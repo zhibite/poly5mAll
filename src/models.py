@@ -374,6 +374,10 @@ class DailyStats:
     losses: int = 0
     gross_pnl: float = 0.0
     fees: float = 0.0
+    # Intraday high-water mark of realized PnL (starts at 0).  The risk
+    # layer pauses new entries when peak_pnl - realized_pnl reaches the
+    # configured intraday drawdown cap.
+    peak_pnl: float = 0.0
 
     def add(self, pnl_net: float, pnl_gross: float, fee: float) -> None:
         self.realized_pnl += pnl_net
@@ -384,6 +388,7 @@ class DailyStats:
             self.wins += 1
         elif pnl_net < 0:
             self.losses += 1
+        self.peak_pnl = max(self.peak_pnl, self.realized_pnl)
 
     def to_dict(self) -> dict[str, Any]:
         return {
@@ -393,15 +398,23 @@ class DailyStats:
             "losses": self.losses,
             "gross_pnl": round(self.gross_pnl, 6),
             "fees": round(self.fees, 6),
+            "peak_pnl": round(self.peak_pnl, 6),
         }
 
     @classmethod
     def from_dict(cls, raw: dict[str, Any]) -> "DailyStats":
+        realized = float(raw.get("realized_pnl", 0.0))
+        # state.json written before the drawdown pause has no peak_pnl.
+        # The high-water mark is never below the current PnL, so treat a
+        # positive realized PnL as having been the peak: a legacy file
+        # must not look like a drawdown of its whole profit.
+        peak = float(raw.get("peak_pnl", 0.0) or 0.0)
         return cls(
-            realized_pnl=float(raw.get("realized_pnl", 0.0)),
+            realized_pnl=realized,
             trades=int(raw.get("trades", 0)),
             wins=int(raw.get("wins", 0)),
             losses=int(raw.get("losses", 0)),
             gross_pnl=float(raw.get("gross_pnl", 0.0)),
             fees=float(raw.get("fees", 0.0)),
+            peak_pnl=max(peak, realized),
         )

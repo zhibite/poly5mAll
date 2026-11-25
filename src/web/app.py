@@ -261,6 +261,12 @@ def create_app(
 
     def _config_payload() -> dict[str, Any]:
         e = settings.execution
+
+        def risk_value(name: str, default: Any) -> Any:
+            """Runtime override if set, else the startup config value."""
+            value = getattr(runtime, name, None)
+            return default if value is None else value
+
         fee_rows = _fee_rows()
         fees_by_asset: dict[str, list[dict[str, Any]]] = {}
         for row in fee_rows:
@@ -297,15 +303,34 @@ def create_app(
             "require_two_sided_book": e.require_two_sided_book,
             "min_entry_bid_depth_usd": e.min_entry_bid_depth_usd,
             "max_same_side_positions": e.max_same_side_positions,
-            "max_same_side_per_window": (
-                getattr(runtime, "max_same_side_per_window", None)
-                if getattr(runtime, "max_same_side_per_window", None)
-                is not None
-                else e.max_same_side_per_window
+            "max_same_side_per_window": risk_value(
+                "max_same_side_per_window", e.max_same_side_per_window
             ),
             "skip_fee_negative": e.skip_fee_negative,
-            "max_daily_loss_usd": getattr(
-                runtime, "max_daily_loss_usd", e.max_daily_loss_usd
+            "max_daily_loss_usd": risk_value(
+                "max_daily_loss_usd", e.max_daily_loss_usd
+            ),
+            "max_intraday_drawdown_usd": risk_value(
+                "max_intraday_drawdown_usd", e.max_intraday_drawdown_usd
+            ),
+            "max_positions_per_window": risk_value(
+                "max_positions_per_window", e.max_positions_per_window
+            ),
+            "max_window_notional_usd": risk_value(
+                "max_window_notional_usd", e.max_window_notional_usd
+            ),
+            "asset_perf_lookback_days": risk_value(
+                "asset_perf_lookback_days", e.asset_perf_lookback_days
+            ),
+            "asset_perf_min_pnl_usd": risk_value(
+                "asset_perf_min_pnl_usd", e.asset_perf_min_pnl_usd
+            ),
+            "asset_perf_stake_mult": risk_value(
+                "asset_perf_stake_mult", e.asset_perf_stake_mult
+            ),
+            "asset_perf_disable_pnl_usd": risk_value(
+                "asset_perf_disable_pnl_usd",
+                e.asset_perf_disable_pnl_usd,
             ),
             "timing": {
                 "window_sec": settings.general.window_sec,

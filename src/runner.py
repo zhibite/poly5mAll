@@ -15,6 +15,7 @@ from __future__ import annotations
 
 import asyncio
 import time
+from collections import deque
 from typing import Any
 
 from src.config import AssetConfig, Settings
@@ -50,12 +51,19 @@ log = get_logger("runner")
 _TICK_REFRESH_S = 5.0
 
 
-async def _always_reserve_entry(side: Side, window_start: int) -> bool:
-    return True
+async def _always_reserve_entry(
+    side: Side, window_start: int, notional: float = 0.0
+) -> tuple[bool, str]:
+    return True, ""
 
 
 async def _release_entry_noop(side: Side, window_start: int) -> None:
     return None
+
+
+def _default_stake_policy(asset: str) -> tuple[bool, float, str]:
+    """(allowed, stake multiplier, reason) when no perf policy is wired."""
+    return True, 1.0, ""
 
 
 class AssetRunner:
@@ -76,6 +84,7 @@ class AssetRunner:
         runtime: RuntimeConfig | None = None,
         reserve_entry=None,
         release_entry=None,
+        stake_policy=None,
     ) -> None:
         self.asset = asset_cfg.asset
         self.cfg = asset_cfg
@@ -90,6 +99,7 @@ class AssetRunner:
         self._on_state_change = on_state_change
         self._reserve_entry_cb = reserve_entry or _always_reserve_entry
         self._release_entry_cb = release_entry or _release_entry_noop
+        self._stake_policy = stake_policy or _default_stake_policy
 
         self.window: MarketWindow | None = None
         self.sides: list[SideRuntime] = []
@@ -365,13 +375,26 @@ class AssetRunner:
             self._log_skip(block, side, now)
             return
 
+        # Per-asset rolling performance: a coin that keeps losing gets a
+        # smaller stake, and one past the hard threshold stops entering.
+        perf_allowed, stake_mult, perf_reason = self._stake_policy(self.asset)
+        if not perf_allowed:
+            side.last_reason = perf_reason
+            self._log_skip(perf_reason, side, now)
+            return
+        stake_usd = float(side.plan.stake_usd) * float(stake_mult)
+        if stake_usd <= 0:
+            side.last_reason = "asset-perf-disabled"
+            self._log_skip("asset-perf-disabled", side, now)
+            return
+
         window_start = self.window.start_ts
-        reserved = await self._reserve_entry_cb(
-            side.plan.side, window_start
+        reserved, reserve_reason = await self._reserve_entry_cb(
+            side.plan.side, window_start, stake_usd
         )
         if not reserved:
-            side.last_reason = "same-side-limit"
-            self._log_skip("same-side-limit", side, now)
+            side.last_reason = reserve_reason or "entry-limit"
+            self._log_skip(side.last_reason, side, now)
             return
         try:
             side.status = SideStatus.ENTERING
@@ -383,7 +406,7 @@ class AssetRunner:
             try:
                 fill = await self.broker.buy(
                     self.window.token(side.plan.side),
-                    side.plan.stake_usd,
+                    stake_usd,
                     limit,
                     self.window.tick_size,
                     fee_rate=self.current_cfg().taker_fee_rate,
@@ -412,6 +435,9 @@ class AssetRunner:
                     exc,
                 )
                 return
+            # The fill resolves the effective stake (plan stake scaled by
+            # the rolling-performance multiplier), not the unscaled plan.
+            position.stake_usd = stake_usd
             if quote is not None:
                 # Snapshot the quote that triggered the entry.  The fill
                 # is a taker ask; these fields record the spread it paid
@@ -879,8 +905,8 @@ class MultiAssetRunner:
         self.broker = broker
         self.store = store
         self.market_ws = market_ws
-        self.runtime = runtime or RuntimeConfig(
-            settings.data_dir / "runtime_config.json", settings.assets
+        self.runtime = runtime or RuntimeConfig.from_settings(
+            settings.data_dir / "runtime_config.json", settings
         )
 
         self.positions, self.daily = store.load()
@@ -894,10 +920,16 @@ class MultiAssetRunner:
         self._last_daily_warn = 0.0
         self._started_at = time.time()
         self._entry_lock = asyncio.Lock()
-        # (side, window_start) -> in-flight entry attempts.  Keyed per
+        # (side, window_start) -> in-flight entry notionals.  Keyed per
         # window so a settled position from the previous window cannot
-        # block entries in the next one.
-        self._entry_reservations: dict[tuple[Side, int], int] = {}
+        # block entries in the next one.  The notionals let the per-window
+        # exposure cap count concurrent attempts that have not filled yet.
+        self._entry_reservations: dict[tuple[Side, int], list[float]] = {}
+        # (exit_ts, asset, pnl_net) from trades.jsonl, for the rolling
+        # per-asset performance rule.  Loaded once so a restart keeps the
+        # lookback instead of starting from zero.
+        self._asset_pnl: deque[tuple[float, str, float]] = deque()
+        self._load_asset_history()
 
         # Build every configured asset, including disabled ones: the Web
         # config page can turn a coin on without restarting the process.
@@ -916,6 +948,7 @@ class MultiAssetRunner:
                 runtime=self.runtime,
                 reserve_entry=self.reserve_entry,
                 release_entry=self.release_entry,
+                stake_policy=self.asset_perf_policy,
             )
 
     def same_side_open(self, side: Side) -> int:
@@ -935,27 +968,63 @@ class MultiAssetRunner:
             if pos.side is side and pos.window_start == window_start
         )
 
+    def positions_in_window(self, window_start: int) -> list[Position]:
+        """Open positions (both sides, all assets) in one 5m window."""
+        return [
+            pos
+            for pos in self.all_positions()
+            if pos.window_start == int(window_start)
+        ]
+
+    def window_open_notional(self, window_start: int) -> float:
+        """Capital deployed by the open positions of one 5m window."""
+        return sum(
+            float(getattr(pos, "cost_usd", 0.0) or 0.0)
+            for pos in self.positions_in_window(window_start)
+        )
+
     def _same_side_reserved(self, side: Side) -> int:
         return sum(
-            n
-            for (reserved_side, _), n in self._entry_reservations.items()
+            len(amounts)
+            for (reserved_side, _), amounts in self._entry_reservations.items()
             if reserved_side is side
         )
 
-    async def reserve_entry(self, side: Side, window_start: int) -> bool:
-        """Reserve one same-side entry slot for ``window_start``.
+    def _window_reserved(self, window_start: int) -> tuple[int, float]:
+        """(count, notional) of in-flight entries reserved for a window."""
+        count = 0
+        notional = 0.0
+        for (_, reserved_window), amounts in self._entry_reservations.items():
+            if reserved_window == window_start:
+                count += len(amounts)
+                notional += sum(amounts)
+        return count, notional
 
-        Two caps apply: the global concurrent same-side cap and the
-        per-window cap that limits correlated entries in one 5m window.
-        In-flight attempts count too, so two assets cannot both pass the
-        check at the same moment.
+    async def reserve_entry(
+        self, side: Side, window_start: int, notional: float = 0.0
+    ) -> tuple[bool, str]:
+        """Reserve one entry slot for ``window_start``.
+
+        Four caps apply (0 disables each): the global concurrent same-side
+        cap, the same-side per-window cap, the total entries per window
+        across both sides / all assets, and the total entry notional per
+        window.  In-flight attempts count too, so two assets cannot both
+        pass the check at the same moment.  Returns ``(ok, reason)``.
         """
         e = self.settings.execution
         limit_total = int(e.max_same_side_positions)
-        limit_window = self.max_same_side_per_window
-        if limit_total <= 0 and limit_window <= 0:
-            return True
+        limit_side_window = self.max_same_side_per_window
+        limit_window_count = self.max_positions_per_window
+        limit_window_notional = self.max_window_notional_usd
+        if (
+            limit_total <= 0
+            and limit_side_window <= 0
+            and limit_window_count <= 0
+            and limit_window_notional <= 0
+        ):
+            return True, ""
         window_start = int(window_start)
+        notional = max(0.0, float(notional or 0.0))
         key = (side, window_start)
         async with self._entry_lock:
             if limit_total > 0:
@@ -963,26 +1032,43 @@ class MultiAssetRunner:
                     self.same_side_open(side) + self._same_side_reserved(side)
                 )
                 if used_total >= limit_total:
-                    return False
-            if limit_window > 0:
+                    return False, "same-side-limit"
+            if limit_side_window > 0:
                 used_window = (
                     self.same_side_open_in_window(side, window_start)
-                    + self._entry_reservations.get(key, 0)
+                    + len(self._entry_reservations.get(key, ()))
                 )
-                if used_window >= limit_window:
-                    return False
-            self._entry_reservations[key] = (
-                self._entry_reservations.get(key, 0) + 1
-            )
-            return True
+                if used_window >= limit_side_window:
+                    return False, "same-side-limit"
+            if limit_window_count > 0 or limit_window_notional > 0:
+                reserved_count, reserved_notional = self._window_reserved(
+                    window_start
+                )
+                if limit_window_count > 0:
+                    used_count = (
+                        len(self.positions_in_window(window_start))
+                        + reserved_count
+                    )
+                    if used_count >= limit_window_count:
+                        return False, "window-position-limit"
+                if limit_window_notional > 0:
+                    used_notional = (
+                        self.window_open_notional(window_start)
+                        + reserved_notional
+                    )
+                    if used_notional + notional > limit_window_notional + 1e-9:
+                        return False, "window-notional-limit"
+            self._entry_reservations.setdefault(key, []).append(notional)
+            return True, ""
 
     async def release_entry(self, side: Side, window_start: int) -> None:
         key = (side, int(window_start))
         async with self._entry_lock:
-            left = self._entry_reservations.get(key, 0) - 1
-            if left > 0:
-                self._entry_reservations[key] = left
-            else:
+            amounts = self._entry_reservations.get(key)
+            if not amounts:
+                return
+            amounts.pop()
+            if not amounts:
                 self._entry_reservations.pop(key, None)
 
     # ── runtime paper/live mode ────────────────────────────────────────
@@ -1002,29 +1088,175 @@ class MultiAssetRunner:
     def live_allowed(self) -> bool:
         return bool(self.settings.live)
 
+    def _runtime_value(self, field: str, default: Any) -> Any:
+        """Runtime override when one is set, else the startup config."""
+        if self.runtime is not None:
+            value = getattr(self.runtime, field, None)
+            if value is not None:
+                return value
+        return default
+
     @property
     def max_daily_loss_usd(self) -> float:
         """Effective daily loss cap (runtime override or startup config)."""
-        if self.runtime is not None:
-            return float(
-                getattr(
-                    self.runtime,
-                    "max_daily_loss_usd",
-                    self.settings.execution.max_daily_loss_usd,
-                )
+        return float(
+            self._runtime_value(
+                "max_daily_loss_usd",
+                self.settings.execution.max_daily_loss_usd,
             )
-        return float(self.settings.execution.max_daily_loss_usd)
+        )
 
     @property
     def max_same_side_per_window(self) -> int:
         """Effective same-side per-window cap (runtime override)."""
-        if self.runtime is not None:
-            value = getattr(
-                self.runtime, "max_same_side_per_window", None
+        return int(
+            self._runtime_value(
+                "max_same_side_per_window",
+                self.settings.execution.max_same_side_per_window,
             )
-            if value is not None:
-                return int(value)
-        return int(self.settings.execution.max_same_side_per_window)
+        )
+
+    @property
+    def max_intraday_drawdown_usd(self) -> float:
+        """Effective intraday drawdown pause (0 = off)."""
+        return float(
+            self._runtime_value(
+                "max_intraday_drawdown_usd",
+                self.settings.execution.max_intraday_drawdown_usd,
+            )
+        )
+
+    @property
+    def max_positions_per_window(self) -> int:
+        """Effective per-window total position cap (0 = off)."""
+        return int(
+            self._runtime_value(
+                "max_positions_per_window",
+                self.settings.execution.max_positions_per_window,
+            )
+        )
+
+    @property
+    def max_window_notional_usd(self) -> float:
+        """Effective per-window total notional cap (0 = off)."""
+        return float(
+            self._runtime_value(
+                "max_window_notional_usd",
+                self.settings.execution.max_window_notional_usd,
+            )
+        )
+
+    @property
+    def asset_perf_lookback_days(self) -> float:
+        """Rolling-performance lookback (0 = rule off)."""
+        return float(
+            self._runtime_value(
+                "asset_perf_lookback_days",
+                self.settings.execution.asset_perf_lookback_days,
+            )
+        )
+
+    @property
+    def asset_perf_min_pnl_usd(self) -> float:
+        return float(
+            self._runtime_value(
+                "asset_perf_min_pnl_usd",
+                self.settings.execution.asset_perf_min_pnl_usd,
+            )
+        )
+
+    @property
+    def asset_perf_stake_mult(self) -> float:
+        return float(
+            self._runtime_value(
+                "asset_perf_stake_mult",
+                self.settings.execution.asset_perf_stake_mult,
+            )
+        )
+
+    @property
+    def asset_perf_disable_pnl_usd(self) -> float:
+        return float(
+            self._runtime_value(
+                "asset_perf_disable_pnl_usd",
+                self.settings.execution.asset_perf_disable_pnl_usd,
+            )
+        )
+
+    # ── rolling per-asset performance ──────────────────────────────────
+    def _load_asset_history(self) -> None:
+        """Seed the rolling performance window from trades.jsonl."""
+        try:
+            rows = self.store.all_trades()
+        except Exception as exc:  # noqa: BLE001 - audit file must not block startup
+            log.warning("runner.asset_history_failed error={}", exc)
+            return
+        for row in rows:
+            try:
+                ts = float(row.get("exit_ts") or 0.0)
+                pnl = float(row.get("pnl_net") or 0.0)
+            except (TypeError, ValueError):
+                continue
+            asset = str(row.get("asset") or "").strip().upper()
+            if asset and ts > 0:
+                self._asset_pnl.append((ts, asset, pnl))
+        if self._asset_pnl:
+            log.info("runner.asset_history trades={}", len(self._asset_pnl))
+
+    def asset_rolling_pnl(
+        self, asset: str, now: float | None = None
+    ) -> float:
+        """Realized net PnL of ``asset`` inside the lookback window."""
+        lookback = self.asset_perf_lookback_days
+        if lookback <= 0:
+            return 0.0
+        now_f = time.time() if now is None else float(now)
+        cutoff = now_f - lookback * 86400.0
+        while self._asset_pnl and self._asset_pnl[0][0] < cutoff:
+            self._asset_pnl.popleft()
+        name = asset.upper()
+        return sum(
+            pnl for ts, a, pnl in self._asset_pnl
+            if a == name and ts >= cutoff
+        )
+
+    def asset_perf_policy(
+        self, asset: str, now: float | None = None
+    ) -> tuple[bool, float, str]:
+        """(allowed, stake multiplier, reason) for this asset's entries.
+
+        Downweights once the rolling PnL is at or below the soft threshold;
+        skips the asset entirely at or below the hard (disable) threshold.
+        """
+        if self.asset_perf_lookback_days <= 0:
+            return True, 1.0, ""
+        pnl = self.asset_rolling_pnl(asset, now)
+        disable_at = self.asset_perf_disable_pnl_usd
+        if disable_at < 0 and pnl <= disable_at:
+            return False, 0.0, "asset-perf-disabled"
+        if pnl <= self.asset_perf_min_pnl_usd:
+            mult = float(self.asset_perf_stake_mult)
+            if mult <= 0:
+                return False, 0.0, "asset-perf-disabled"
+            return True, mult, "asset-perf-downweight"
+        return True, 1.0, ""
+
+    def asset_perf_snapshot(
+        self, now: float | None = None
+    ) -> dict[str, dict[str, Any]]:
+        """Per-asset rolling PnL / stake multiplier for the dashboard."""
+        if self.asset_perf_lookback_days <= 0:
+            return {}
+        out: dict[str, dict[str, Any]] = {}
+        for name in self.assets:
+            allowed, mult, reason = self.asset_perf_policy(name, now)
+            out[name] = {
+                "rolling_pnl": round(self.asset_rolling_pnl(name, now), 4),
+                "stake_mult": mult,
+                "blocked": not allowed,
+                "reason": reason,
+            }
+        return out
 
     def mode_switch_block_reason(self) -> str:
         """Why the paper/live switch is not allowed right now ("" = ok)."""
@@ -1098,6 +1330,14 @@ class MultiAssetRunner:
         log.warning("runtime flatten_open_positions sold={}", sold)
         return sold
 
+    def intraday_drawdown(self, now: float | None = None) -> float:
+        """How far today's realized PnL sits below its high-water mark."""
+        now_f = time.time() if now is None else float(now)
+        stats = self.daily.get(day_key(now_f))
+        if stats is None:
+            return 0.0
+        return max(0.0, stats.peak_pnl - stats.realized_pnl)
+
     def entries_allowed(self, side: Side | None = None) -> tuple[bool, str]:
         e = self.settings.execution
         if self.pause_new_entries:
@@ -1105,15 +1345,25 @@ class MultiAssetRunner:
         kill_path = self.settings.resolve_path(e.kill_switch_file)
         if e.kill_switch_file and kill_path.exists():
             return False, "kill-switch"
+        today = self.daily.get(day_key(time.time()))
+        if today is None:
+            return True, "ok"
         limit = self.max_daily_loss_usd
-        if limit > 0:
-            today = self.daily.get(day_key(time.time()))
-            if today is not None and today.realized_pnl <= -limit:
-                return False, "daily-loss-limit"
+        if limit > 0 and today.realized_pnl <= -limit:
+            return False, "daily-loss-limit"
+        drawdown_limit = self.max_intraday_drawdown_usd
+        if (
+            drawdown_limit > 0
+            and today.peak_pnl - today.realized_pnl >= drawdown_limit - 1e-9
+        ):
+            return False, "intraday-drawdown"
         return True, "ok"
 
     def _on_trade(self, record: TradeRecord) -> None:
         self.store.append_trade(record)
+        self._asset_pnl.append(
+            (float(record.exit_ts), record.asset.upper(), float(record.pnl_net))
+        )
         day = day_key(record.exit_ts)
         stats = self.daily.setdefault(day, DailyStats())
         stats.add(
@@ -1522,6 +1772,10 @@ class MultiAssetRunner:
     def status_payload(self, now: float | None = None) -> dict[str, Any]:
         now_f = time.time() if now is None else float(now)
         allowed, reason = self.entries_allowed()
+        window_start = int(now_f) - int(now_f) % int(
+            self.settings.general.window_sec
+        )
+        reserved_count, reserved_notional = self._window_reserved(window_start)
         return {
             "ts": now_f,
             "iso": utc_iso(now_f),
@@ -1533,6 +1787,19 @@ class MultiAssetRunner:
             "max_same_side_positions": self.settings.execution.max_same_side_positions,
             "max_same_side_per_window": self.max_same_side_per_window,
             "max_daily_loss_usd": self.max_daily_loss_usd,
+            "max_intraday_drawdown_usd": self.max_intraday_drawdown_usd,
+            "intraday_drawdown_usd": round(self.intraday_drawdown(now_f), 4),
+            "max_positions_per_window": self.max_positions_per_window,
+            "max_window_notional_usd": self.max_window_notional_usd,
+            "window_exposure": {
+                "start_ts": window_start,
+                "positions": len(self.positions_in_window(window_start)),
+                "notional_usd": round(
+                    self.window_open_notional(window_start), 4
+                ),
+                "reserved_positions": reserved_count,
+                "reserved_notional_usd": round(reserved_notional, 4),
+            },
             "same_side_open": {
                 "UP": self.same_side_open(Side.UP),
                 "DOWN": self.same_side_open(Side.DOWN),
@@ -1541,6 +1808,7 @@ class MultiAssetRunner:
             "pause_reason": self.pause_reason,
             "entries_allowed": allowed,
             "entries_block_reason": reason,
+            "asset_perf": self.asset_perf_snapshot(now_f),
             "daily": {
                 day: stats.to_dict() for day, stats in sorted(self.daily.items())
             },

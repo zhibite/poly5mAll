@@ -49,6 +49,18 @@ def test_state_roundtrip(tmp_path):
     assert loaded_daily["2026-11-04"].realized_pnl == 1.2
 
 
+def test_daily_stats_peak_pnl_roundtrip_and_legacy(tmp_path):
+    store = StateStore(tmp_path)
+    daily = {"2026-11-04": DailyStats(realized_pnl=-2.0, peak_pnl=5.0, trades=4)}
+    store.save([], daily)
+    _, loaded = store.load()
+    assert loaded["2026-11-04"].peak_pnl == pytest.approx(5.0)
+    # A legacy row without peak_pnl must not look like a drawdown of its
+    # whole profit: the high-water mark is at least the current PnL.
+    legacy = DailyStats.from_dict({"realized_pnl": 3.0, "trades": 2})
+    assert legacy.peak_pnl == pytest.approx(3.0)
+
+
 def test_trade_append(tmp_path):
     store = StateStore(tmp_path)
     record = TradeRecord(

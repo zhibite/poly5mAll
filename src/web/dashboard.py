@@ -144,12 +144,18 @@ function renderAssets(s) {
     const enabledPill = enabled
       ? '<span class="pill green">启用</span>'
       : '<span class="pill">关闭</span>';
+    const perf = (s.asset_perf || {})[asset];
+    const perfTag = perf && perf.blocked
+      ? ' <span class="pill red" title="滚动表现触底，暂停开仓">表现停</span>'
+      : (perf && Number(perf.stake_mult) < 1
+        ? ` <span class="pill orange" title="滚动表现降权">×${perf.stake_mult}</span>`
+        : '');
     const w = a.window || {};
     const sides = Object.entries(a.sides || {});
     if (sides.length === 0) {
       const reason = enabled ? '等待 5m 窗口...' : '策略已关闭，无新开仓';
       rows.push(`<tr>
-        <td><b>${escapeHtml(asset)}</b></td>
+        <td><b>${escapeHtml(asset)}</b>${perfTag}</td>
         <td>${enabledPill}</td>
         <td colspan="10" class="muted">${reason}</td>
       </tr>`);
@@ -161,7 +167,7 @@ function renderAssets(s) {
         ? `${fmt(p.shares - p.sold_shares, 2)} @ ${fmt(p.entry_price, 3)}`
         : '--';
       rows.push(`<tr>
-        <td><b>${escapeHtml(asset)}</b></td>
+        <td><b>${escapeHtml(asset)}</b>${perfTag}</td>
         <td>${enabledPill}</td>
         <td>${escapeHtml(w.slug || '--')}<br><span class="muted">${utcTime(w.start_ts)}</span></td>
         <td>${escapeHtml(side.phase || '--')}</td>
@@ -227,7 +233,10 @@ async function refresh() {
       ? '实盘模式：真实 CLOB FAK 订单'
       : '纸面模式：实时订单簿模拟成交，已扣官方 taker 费（BTC 5% / 其他 1%）')
       + ` · 同向 UP ${ss.UP ?? 0}/${sideLimit} · DOWN ${ss.DOWN ?? 0}/${sideLimit}`
-      + ` · 单窗同向 ≤${winLimit}`;
+      + ` · 单窗同向 ≤${winLimit}`
+      + ` · 单窗 ${(s.window_exposure || {}).positions ?? 0}/${s.max_positions_per_window ?? '--'}笔`
+      + ` ${money((s.window_exposure || {}).notional_usd, 2)}/${s.max_window_notional_usd ?? '--'}U`
+      + ` · 回撤 ${money(s.intraday_drawdown_usd, 2)}/${s.max_intraday_drawdown_usd ?? '--'}U`;
     $('mode-note').className = 'control-meta ' + (s.mode === 'live' ? 'red' : 'muted');
     renderAssets(s);
 

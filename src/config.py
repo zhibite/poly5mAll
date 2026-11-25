@@ -204,6 +204,22 @@ class ExecutionConfig:
     # Stop opening new positions once the UTC day's realized net PnL is at
     # or below -MAX_DAILY_LOSS_USD.  0 disables the cap.
     max_daily_loss_usd: float = 20.0
+    # Pause new entries when the UTC day's realized PnL falls this far
+    # below its intraday high-water mark.  0 disables the pause.
+    max_intraday_drawdown_usd: float = 8.0
+    # Total exposure per 5m window across BOTH sides and all assets.
+    # 0 disables the corresponding cap.
+    max_positions_per_window: int = 3
+    max_window_notional_usd: float = 6.0
+    # Per-asset rolling performance de-risking.  If an asset's realized
+    # PnL over the lookback is <= ASSET_PERF_MIN_PNL_USD its stake is
+    # multiplied by ASSET_PERF_STAKE_MULT; at or below
+    # ASSET_PERF_DISABLE_PNL_USD (<0) new entries are skipped entirely.
+    # ASSET_PERF_LOOKBACK_DAYS=0 disables the rule.
+    asset_perf_lookback_days: float = 7.0
+    asset_perf_min_pnl_usd: float = -3.0
+    asset_perf_stake_mult: float = 0.5
+    asset_perf_disable_pnl_usd: float = -6.0
     kill_switch_file: str = "data/STOP"
     pause_new_entries: bool = False
     flatten_on_exit: bool = False
@@ -507,6 +523,50 @@ def load_settings(config_path: str | Path | None = None) -> Settings:
             "MAX_DAILY_LOSS_USD",
             _as_float(_get(exec_raw, "MAX_DAILY_LOSS_USD", 20.0), 20.0),
         ),
+        max_intraday_drawdown_usd=_env_float(
+            "MAX_INTRADAY_DRAWDOWN_USD",
+            _as_float(
+                _get(exec_raw, "MAX_INTRADAY_DRAWDOWN_USD", 8.0), 8.0
+            ),
+        ),
+        max_positions_per_window=_env_int(
+            "MAX_POSITIONS_PER_WINDOW",
+            int(
+                _as_float(
+                    _get(exec_raw, "MAX_POSITIONS_PER_WINDOW", 3), 3
+                )
+            ),
+        ),
+        max_window_notional_usd=_env_float(
+            "MAX_WINDOW_NOTIONAL_USD",
+            _as_float(
+                _get(exec_raw, "MAX_WINDOW_NOTIONAL_USD", 6.0), 6.0
+            ),
+        ),
+        asset_perf_lookback_days=_env_float(
+            "ASSET_PERF_LOOKBACK_DAYS",
+            _as_float(
+                _get(exec_raw, "ASSET_PERF_LOOKBACK_DAYS", 7.0), 7.0
+            ),
+        ),
+        asset_perf_min_pnl_usd=_env_float(
+            "ASSET_PERF_MIN_PNL_USD",
+            _as_float(
+                _get(exec_raw, "ASSET_PERF_MIN_PNL_USD", -3.0), -3.0
+            ),
+        ),
+        asset_perf_stake_mult=_env_float(
+            "ASSET_PERF_STAKE_MULT",
+            _as_float(
+                _get(exec_raw, "ASSET_PERF_STAKE_MULT", 0.5), 0.5
+            ),
+        ),
+        asset_perf_disable_pnl_usd=_env_float(
+            "ASSET_PERF_DISABLE_PNL_USD",
+            _as_float(
+                _get(exec_raw, "ASSET_PERF_DISABLE_PNL_USD", -6.0), -6.0
+            ),
+        ),
         kill_switch_file=_env(
             "KILL_SWITCH_FILE",
             str(_get(exec_raw, "KILL_SWITCH_FILE", "data/STOP")),
@@ -799,6 +859,16 @@ def validate_settings(settings: Settings) -> None:
         raise ConfigError("MAX_SPREAD_ABS must be >= 0")
     if e.max_daily_loss_usd < 0:
         raise ConfigError("MAX_DAILY_LOSS_USD must be >= 0")
+    if e.max_intraday_drawdown_usd < 0:
+        raise ConfigError("MAX_INTRADAY_DRAWDOWN_USD must be >= 0")
+    if e.max_positions_per_window < 0:
+        raise ConfigError("MAX_POSITIONS_PER_WINDOW must be >= 0")
+    if e.max_window_notional_usd < 0:
+        raise ConfigError("MAX_WINDOW_NOTIONAL_USD must be >= 0")
+    if e.asset_perf_lookback_days < 0:
+        raise ConfigError("ASSET_PERF_LOOKBACK_DAYS must be >= 0")
+    if not (0.0 <= e.asset_perf_stake_mult <= 1.0):
+        raise ConfigError("ASSET_PERF_STAKE_MULT must be in [0, 1]")
 
     w = settings.web
     if w.enabled:
@@ -876,6 +946,13 @@ def describe(settings: Settings) -> str:
         f"force_exit>={settings.general.force_exit_s:g}s",
         f"stake={e.stake_usd:g}U  fee_rate_default={e.taker_fee_rate:g}  "
         f"include_fees={e.include_fees}",
+        (
+            f"risk: daily_loss<={e.max_daily_loss_usd:g}U  "
+            f"drawdown<={e.max_intraday_drawdown_usd:g}U  "
+            f"window<={e.max_positions_per_window}pos/"
+            f"{e.max_window_notional_usd:g}U  "
+            f"asset_perf={e.asset_perf_lookback_days:g}d"
+        ),
         (
             f"web=http://{settings.web.host}:{settings.web.port} "
             f"enabled={settings.web.enabled} "

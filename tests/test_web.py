@@ -131,6 +131,13 @@ def test_config_defaults_and_update(client):
     assert by_name["ETH"]["enabled"] is True
     assert by_name["BTC"]["stop_loss_pct"] == pytest.approx(0.0)
     assert data["web"]["port"] == 8033
+    assert data["max_intraday_drawdown_usd"] == pytest.approx(8.0)
+    assert data["max_positions_per_window"] == 3
+    assert data["max_window_notional_usd"] == pytest.approx(6.0)
+    assert data["asset_perf_lookback_days"] == pytest.approx(7.0)
+    assert data["asset_perf_min_pnl_usd"] == pytest.approx(-3.0)
+    assert data["asset_perf_stake_mult"] == pytest.approx(0.5)
+    assert data["asset_perf_disable_pnl_usd"] == pytest.approx(-6.0)
     assert data["taker_fee_rate"] == pytest.approx(0.01)
     assert by_name["BTC"]["taker_fee_rate"] == pytest.approx(0.05)
     assert by_name["ETH"]["taker_fee_rate"] == pytest.approx(0.01)
@@ -158,11 +165,25 @@ def test_config_defaults_and_update(client):
             },
             "max_daily_loss_usd": 15,
             "max_same_side_per_window": 3,
+            "max_intraday_drawdown_usd": 12,
+            "max_positions_per_window": 2,
+            "max_window_notional_usd": 5,
+            "asset_perf_lookback_days": 14,
+            "asset_perf_min_pnl_usd": -2,
+            "asset_perf_stake_mult": 0.25,
+            "asset_perf_disable_pnl_usd": -9,
         },
     )
     assert r.status_code == 200, r.text
     data = r.json()
     assert data["max_same_side_per_window"] == 3
+    assert data["max_intraday_drawdown_usd"] == pytest.approx(12.0)
+    assert data["max_positions_per_window"] == 2
+    assert data["max_window_notional_usd"] == pytest.approx(5.0)
+    assert data["asset_perf_lookback_days"] == pytest.approx(14.0)
+    assert data["asset_perf_min_pnl_usd"] == pytest.approx(-2.0)
+    assert data["asset_perf_stake_mult"] == pytest.approx(0.25)
+    assert data["asset_perf_disable_pnl_usd"] == pytest.approx(-9.0)
     by_name = {a["asset"]: a for a in data["assets"]}
     assert by_name["ETH"]["enabled"] is True
     assert by_name["ETH"]["entry_thresh"] == pytest.approx(0.2)
@@ -177,6 +198,10 @@ def test_config_defaults_and_update(client):
     by_name = {a["asset"]: a for a in r.json()["assets"]}
     assert by_name["ETH"]["enabled"] is True
     assert by_name["BTC"]["enabled"] is False
+    # The runtime fixture has no startup caps, so reset falls back to
+    # config.toml defaults.
+    assert r.json()["max_intraday_drawdown_usd"] == pytest.approx(8.0)
+    assert r.json()["max_positions_per_window"] == 3
 
 
 def test_mode_switch_requires_live_confirmation(client):

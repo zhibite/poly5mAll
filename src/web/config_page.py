@@ -79,12 +79,45 @@ _BODY = r"""
     <span class="control-meta">同一 5m 窗口内同方向最多 N 笔
       （含在途入场，0=不限），从下一个 5m 窗口生效。</span>
   </div>
+  <div class="controls" style="margin:8px 0 0">
+    <span>日内回撤暂停
+      <input id="drawdown-limit" type="number" min="0" step="1"
+             style="width:90px" value="8"> U
+    </span>
+    <span class="control-meta">UTC 当日已实现 PnL 从日内高点回落达到该值后
+      停止新开仓（0=不限）；当日不再自动恢复，已有仓位照常管理。</span>
+  </div>
+  <div class="controls" style="margin:8px 0 0">
+    <span>单窗总笔数
+      <input id="window-position-limit" type="number" min="0" step="1"
+             style="width:80px" value="3"> 笔
+    </span>
+    <span>单窗总敞口
+      <input id="window-notional-limit" type="number" min="0" step="1"
+             style="width:90px" value="6"> U
+    </span>
+    <span class="control-meta">同一 5m 窗口内双向、所有币合计
+      （含在途入场，0=不限制）。</span>
+  </div>
+  <div class="controls" style="margin:8px 0 0">
+    <span>按币滚动表现降权</span>
+    <span class="control-meta">回看
+      <input id="perf-lookback" type="number" min="0" step="1"
+             style="width:70px" value="7"> 天，已实现净 PnL ≤
+      <input id="perf-min-pnl" type="number" step="1"
+             style="width:80px" value="-3"> U 时仓位 ×
+      <input id="perf-stake-mult" type="number" min="0" max="1" step="0.1"
+             style="width:70px" value="0.5">，≤
+      <input id="perf-disable-pnl" type="number" step="1"
+             style="width:80px" value="-6"> U 时停止开仓
+      （回看 0 天 = 关闭）。</span>
+  </div>
 </div>
 
 <div class="alert info">
   <b>生效时机：</b>启用/关闭 <b>立即</b> 阻止/允许新开仓；方向、entry、TP、每笔仓位、
   强平时间在 <b>下一个 5m 窗口</b> 生效。已有仓位始终按原参数止盈/强平。
-  密钥、端口、`TP_EXECUTION_MODE`、流动性过滤和同向上限不在本页，
+  密钥、端口、`TP_EXECUTION_MODE` 和流动性过滤不在本页，
   需改 <span class="mono">.env</span> / <span class="mono">config.toml</span>；
   费率（官方费率，只读）见下表。
 </div>
@@ -234,6 +267,13 @@ function render() {
   $('entries').className = 'stat-value ' + (cfg.paused ? 'red' : 'green');
   $('daily-loss').value = cfg.max_daily_loss_usd ?? 20;
   $('window-side-limit').value = cfg.max_same_side_per_window ?? 2;
+  $('drawdown-limit').value = cfg.max_intraday_drawdown_usd ?? 8;
+  $('window-position-limit').value = cfg.max_positions_per_window ?? 3;
+  $('window-notional-limit').value = cfg.max_window_notional_usd ?? 6;
+  $('perf-lookback').value = cfg.asset_perf_lookback_days ?? 7;
+  $('perf-min-pnl').value = cfg.asset_perf_min_pnl_usd ?? -3;
+  $('perf-stake-mult').value = cfg.asset_perf_stake_mult ?? 0.5;
+  $('perf-disable-pnl').value = cfg.asset_perf_disable_pnl_usd ?? -6;
   renderMode(cfg);
   renderTiming(cfg);
 
@@ -351,10 +391,45 @@ function collect() {
   if (!(Number.isInteger(windowSideLimit) && windowSideLimit >= 0)) {
     throw new Error('单窗同向上限必须是 >= 0 的整数（0 = 不限制）');
   }
+  const drawdownLimit = Number($('drawdown-limit').value);
+  if (!(drawdownLimit >= 0)) {
+    throw new Error('日内回撤暂停必须是 >= 0 的数值（0 = 不限制）');
+  }
+  const windowPositionLimit = Number($('window-position-limit').value);
+  if (!(Number.isInteger(windowPositionLimit) && windowPositionLimit >= 0)) {
+    throw new Error('单窗总笔数必须是 >= 0 的整数（0 = 不限制）');
+  }
+  const windowNotionalLimit = Number($('window-notional-limit').value);
+  if (!(windowNotionalLimit >= 0)) {
+    throw new Error('单窗总敞口必须是 >= 0 的数值（0 = 不限制）');
+  }
+  const perfLookback = Number($('perf-lookback').value);
+  if (!(perfLookback >= 0)) {
+    throw new Error('表现回看天数必须 >= 0（0 = 关闭该规则）');
+  }
+  const perfMinPnl = Number($('perf-min-pnl').value);
+  if (!Number.isFinite(perfMinPnl)) {
+    throw new Error('降权阈值必须是数值');
+  }
+  const perfStakeMult = Number($('perf-stake-mult').value);
+  if (!(perfStakeMult >= 0 && perfStakeMult <= 1)) {
+    throw new Error('降权系数必须在 [0, 1] 之间');
+  }
+  const perfDisablePnl = Number($('perf-disable-pnl').value);
+  if (!Number.isFinite(perfDisablePnl)) {
+    throw new Error('停止阈值必须是数值');
+  }
   return {
     assets,
     max_daily_loss_usd: dailyLoss,
     max_same_side_per_window: windowSideLimit,
+    max_intraday_drawdown_usd: drawdownLimit,
+    max_positions_per_window: windowPositionLimit,
+    max_window_notional_usd: windowNotionalLimit,
+    asset_perf_lookback_days: perfLookback,
+    asset_perf_min_pnl_usd: perfMinPnl,
+    asset_perf_stake_mult: perfStakeMult,
+    asset_perf_disable_pnl_usd: perfDisablePnl,
   };
 }
 

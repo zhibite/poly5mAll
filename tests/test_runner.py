@@ -1,12 +1,15 @@
 from __future__ import annotations
 
 import dataclasses
+import json
+import time
 
 import pytest
 
 from src.config import AssetConfig, load_settings
+from src.infra.timeutil import day_key
 from src.market.market_ws import PriceCache
-from src.models import Fill, MarketWindow, Position, Side, SideStatus
+from src.models import DailyStats, Fill, MarketWindow, Position, Side, SideStatus
 from src.runner import AssetRunner, MultiAssetRunner
 from src.runtime_config import RuntimeConfig
 from src.store import StateStore
@@ -312,6 +315,14 @@ async def test_take_profit_fills_at_observed_gap(tmp_path):
 @pytest.mark.asyncio
 async def test_same_side_limit(tmp_path):
     settings = _settings()
+    settings = dataclasses.replace(
+        settings,
+        execution=dataclasses.replace(
+            settings.execution,
+            max_positions_per_window=0,
+            max_window_notional_usd=0.0,
+        ),
+    )
     runtime = RuntimeConfig(tmp_path / "runtime_config.json", settings.assets)
     runner = MultiAssetRunner(
         settings,
@@ -329,8 +340,10 @@ async def test_same_side_limit(tmp_path):
 
     runner.all_positions = lambda: [_P() for _ in range(6)]  # type: ignore[method-assign]
     assert runner.same_side_open(Side.UP) == 6
-    assert await runner.reserve_entry(Side.UP, T0) is False
-    assert await runner.reserve_entry(Side.DOWN, T0) is True
+    assert await runner.reserve_entry(Side.UP, T0) == (
+        False, "same-side-limit",
+    )
+    assert await runner.reserve_entry(Side.DOWN, T0) == (True, "")
 
 
 @pytest.mark.asyncio
@@ -361,19 +374,179 @@ async def test_same_side_per_window_limit(tmp_path):
     ]
     assert runner.same_side_open_in_window(Side.UP, T0) == limit
     assert runner.same_side_open_in_window(Side.UP, T0 - 300) == 0
-    assert await runner.reserve_entry(Side.UP, T0) is False
-    assert await runner.reserve_entry(Side.DOWN, T0) is True
+    assert await runner.reserve_entry(Side.UP, T0) == (
+        False, "same-side-limit",
+    )
+    assert await runner.reserve_entry(Side.DOWN, T0) == (True, "")
     # Positions still settling from the previous window must not block the
     # next one.
-    assert await runner.reserve_entry(Side.UP, T0 + 300) is True
+    assert await runner.reserve_entry(Side.UP, T0 + 300) == (True, "")
 
     # In-flight attempts reserve slots too, so concurrent assets cannot all
     # pass the check before any fill lands.
     for _ in range(limit):
-        assert await runner.reserve_entry(Side.DOWN, T0 + 600) is True
-    assert await runner.reserve_entry(Side.DOWN, T0 + 600) is False
+        assert await runner.reserve_entry(Side.DOWN, T0 + 600) == (True, "")
+    assert await runner.reserve_entry(Side.DOWN, T0 + 600) == (
+        False, "same-side-limit",
+    )
     await runner.release_entry(Side.DOWN, T0 + 600)
-    assert await runner.reserve_entry(Side.DOWN, T0 + 600) is True
+    assert await runner.reserve_entry(Side.DOWN, T0 + 600) == (True, "")
+
+
+def _risk_settings(**overrides):
+    """Settings tuned for one entry path, with the other caps disabled."""
+    settings = _settings()
+    return dataclasses.replace(
+        settings,
+        execution=dataclasses.replace(settings.execution, **overrides),
+    )
+
+
+def _multi_runner(settings, tmp_path):
+    runtime = RuntimeConfig(tmp_path / "runtime_config.json", settings.assets)
+    return MultiAssetRunner(
+        settings,
+        None,
+        PriceCache(),
+        FakeMarketService(_window()),
+        FakeBroker(),
+        StateStore(tmp_path),
+        runtime=runtime,
+    )
+
+
+@pytest.mark.asyncio
+async def test_window_total_position_limit(tmp_path):
+    """The per-window cap counts both sides of every asset."""
+    settings = _risk_settings(
+        max_same_side_positions=0,
+        max_same_side_per_window=0,
+        max_positions_per_window=2,
+        max_window_notional_usd=0.0,
+    )
+    runner = _multi_runner(settings, tmp_path)
+
+    class _P:
+        def __init__(self, side, window_start):
+            self.side = side
+            self.window_start = window_start
+
+    runner.all_positions = lambda: [_P(Side.UP, T0)]  # type: ignore[method-assign]
+    assert await runner.reserve_entry(Side.DOWN, T0) == (True, "")
+    # One open + one in-flight = 2, so a third entry is blocked even
+    # though it is a different side.
+    assert await runner.reserve_entry(Side.UP, T0) == (
+        False, "window-position-limit",
+    )
+    # The next window starts with a clean slate.
+    assert await runner.reserve_entry(Side.UP, T0 + 300) == (True, "")
+
+
+@pytest.mark.asyncio
+async def test_window_notional_limit(tmp_path):
+    """Open cost plus in-flight stake cannot exceed the window budget."""
+    settings = _risk_settings(
+        max_same_side_positions=0,
+        max_same_side_per_window=0,
+        max_positions_per_window=0,
+        max_window_notional_usd=3.0,
+    )
+    runner = _multi_runner(settings, tmp_path)
+
+    class _P:
+        side = Side.UP
+        window_start = T0
+        cost_usd = 2.0
+
+    runner.all_positions = lambda: [_P()]  # type: ignore[method-assign]
+    assert await runner.reserve_entry(Side.DOWN, T0, 1.0) == (True, "")
+    assert await runner.reserve_entry(Side.DOWN, T0, 0.5) == (
+        False, "window-notional-limit",
+    )
+    await runner.release_entry(Side.DOWN, T0)
+    assert await runner.reserve_entry(Side.DOWN, T0, 1.0) == (True, "")
+
+
+def test_intraday_drawdown_pauses_entries(tmp_path):
+    settings = _settings()
+    runner = _multi_runner(settings, tmp_path)
+    today = day_key(time.time())
+    runner.daily[today] = DailyStats(realized_pnl=1.0, peak_pnl=10.0)
+    assert runner.intraday_drawdown() == pytest.approx(9.0)
+    limit = settings.execution.max_intraday_drawdown_usd
+    assert limit == pytest.approx(8.0)
+    assert runner.entries_allowed() == (False, "intraday-drawdown")
+
+    # A smaller drawdown still allows entries.
+    runner.daily[today] = DailyStats(realized_pnl=5.0, peak_pnl=10.0)
+    assert runner.entries_allowed() == (True, "ok")
+
+
+def _seed_trade(store: StateStore, asset: str, pnl_net: float) -> None:
+    row = {
+        "asset": asset,
+        "exit_ts": time.time() - 60.0,
+        "pnl_net": pnl_net,
+    }
+    store.trades_path.write_text(json.dumps(row) + "\n", encoding="utf-8")
+
+
+@pytest.mark.asyncio
+async def test_asset_perf_downweights_stake(tmp_path):
+    settings = _risk_settings()
+    store = StateStore(tmp_path)
+    # -4 is below the -3 soft threshold but above the -6 disable line.
+    _seed_trade(store, "BTC", -4.0)
+    runtime = RuntimeConfig(tmp_path / "runtime_config.json", settings.assets)
+    cache = PriceCache()
+    cache.set_best_bid_ask("down-token", 0.23, 0.24, ts=T0 + 10)
+    broker = FakeBroker()
+    runner = MultiAssetRunner(
+        settings,
+        None,
+        cache,
+        FakeMarketService(_window()),
+        broker,
+        store,
+        runtime=runtime,
+    )
+    assert runner.asset_rolling_pnl("BTC") == pytest.approx(-4.0)
+    assert runner.asset_perf_policy("BTC") == (
+        True, 0.5, "asset-perf-downweight",
+    )
+    await runner.assets["BTC"].tick(T0 + 10)
+    assert len(broker.buys) == 1
+    # Global stake is 2 U; the losing coin trades at half size.
+    assert broker.buys[0][1] == pytest.approx(1.0)
+    pos = runner.assets["BTC"].sides[0].position
+    assert pos is not None
+    assert pos.stake_usd == pytest.approx(1.0)
+
+
+@pytest.mark.asyncio
+async def test_asset_perf_disables_entries(tmp_path):
+    settings = _risk_settings()
+    store = StateStore(tmp_path)
+    _seed_trade(store, "BTC", -7.0)
+    runtime = RuntimeConfig(tmp_path / "runtime_config.json", settings.assets)
+    cache = PriceCache()
+    cache.set_best_bid_ask("down-token", 0.23, 0.24, ts=T0 + 10)
+    broker = FakeBroker()
+    runner = MultiAssetRunner(
+        settings,
+        None,
+        cache,
+        FakeMarketService(_window()),
+        broker,
+        store,
+        runtime=runtime,
+    )
+    assert runner.asset_perf_policy("BTC") == (
+        False, 0.0, "asset-perf-disabled",
+    )
+    await runner.assets["BTC"].tick(T0 + 10)
+    assert broker.buys == []
+    assert runner.assets["BTC"].sides[0].last_reason == "asset-perf-disabled"
 
 
 @pytest.mark.asyncio

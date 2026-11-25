@@ -98,6 +98,63 @@ def test_same_side_per_window_cap_update_and_persist(tmp_path):
     assert reloaded.max_same_side_per_window == 2
 
 
+_RISK_DEFAULTS = {
+    "max_intraday_drawdown_usd": 8.0,
+    "max_positions_per_window": 3,
+    "max_window_notional_usd": 6.0,
+    "asset_perf_lookback_days": 7.0,
+    "asset_perf_min_pnl_usd": -3.0,
+    "asset_perf_stake_mult": 0.5,
+    "asset_perf_disable_pnl_usd": -6.0,
+}
+
+
+def test_new_risk_caps_update_persist_and_reset(tmp_path):
+    s = load_settings()
+    path = tmp_path / "runtime_config.json"
+    rt = RuntimeConfig(path, s.assets, **_RISK_DEFAULTS)
+    for field, value in _RISK_DEFAULTS.items():
+        assert getattr(rt, field) == pytest.approx(value)
+
+    rt.update(
+        {
+            "max_intraday_drawdown_usd": 12,
+            "max_positions_per_window": 2,
+            "max_window_notional_usd": 5,
+            "asset_perf_lookback_days": 14,
+            "asset_perf_min_pnl_usd": -2,
+            "asset_perf_stake_mult": 0.25,
+            "asset_perf_disable_pnl_usd": -9,
+        }
+    )
+    reloaded = RuntimeConfig(path, s.assets, **_RISK_DEFAULTS)
+    assert reloaded.max_intraday_drawdown_usd == pytest.approx(12.0)
+    assert reloaded.max_positions_per_window == 2
+    assert reloaded.max_window_notional_usd == pytest.approx(5.0)
+    assert reloaded.asset_perf_lookback_days == pytest.approx(14.0)
+    assert reloaded.asset_perf_min_pnl_usd == pytest.approx(-2.0)
+    assert reloaded.asset_perf_stake_mult == pytest.approx(0.25)
+    assert reloaded.asset_perf_disable_pnl_usd == pytest.approx(-9.0)
+
+    with pytest.raises(ValueError):
+        rt.update({"asset_perf_stake_mult": 1.5})
+    with pytest.raises(ValueError):
+        rt.update({"max_positions_per_window": 1.5})
+    with pytest.raises(ValueError):
+        rt.update({"max_window_notional_usd": -1})
+
+    reloaded.reset()
+    for field, value in _RISK_DEFAULTS.items():
+        assert getattr(reloaded, field) == pytest.approx(value)
+
+
+def test_new_risk_caps_default_to_none_without_startup_values(tmp_path):
+    """None means 'use config.toml' rather than 'cap disabled'."""
+    rt = _runtime(tmp_path)
+    for field in _RISK_DEFAULTS:
+        assert getattr(rt, field) is None
+
+
 def test_mode_default_persisted_and_live_gate(tmp_path):
     s = load_settings()
     path = tmp_path / "runtime_config.json"

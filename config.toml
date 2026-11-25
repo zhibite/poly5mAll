@@ -100,6 +100,25 @@ MAX_SPREAD_ABS = 0.01
 # Stop opening new positions once the UTC day's realized net PnL is at or
 # below -MAX_DAILY_LOSS_USD.  0 disables.  Editable on /config.
 MAX_DAILY_LOSS_USD = 20.0
+# Pause new entries when the UTC day's realized PnL falls this far below
+# its intraday high-water mark.  The pause lasts for the rest of the UTC
+# day; 0 disables.  Editable on /config.
+MAX_INTRADAY_DRAWDOWN_USD = 8.0
+# Total exposure per 5m window across BOTH sides and all assets.  Open
+# positions plus in-flight entries from earlier windows count only when
+# they belong to the same 5m window.  0 disables each cap.
+# Editable on /config.
+MAX_POSITIONS_PER_WINDOW = 3
+MAX_WINDOW_NOTIONAL_USD = 6.0
+# Per-asset rolling performance de-risking, computed from trades.jsonl.
+# At or below ASSET_PERF_MIN_PNL_USD the entry stake is multiplied by
+# ASSET_PERF_STAKE_MULT; at or below ASSET_PERF_DISABLE_PNL_USD new
+# entries for that coin are skipped.  LOOKBACK_DAYS = 0 disables the rule.
+# Editable on /config.
+ASSET_PERF_LOOKBACK_DAYS = 7.0
+ASSET_PERF_MIN_PNL_USD = -3.0
+ASSET_PERF_STAKE_MULT = 0.5
+ASSET_PERF_DISABLE_PNL_USD = -6.0
 # A file whose presence pauses NEW entries (exits still run).
 KILL_SWITCH_FILE = "data/STOP"
 PAUSE_NEW_ENTRIES = false

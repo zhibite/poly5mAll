@@ -19,7 +19,7 @@ import time
 from pathlib import Path
 from typing import Any
 
-from src.config import AssetConfig
+from src.config import AssetConfig, Settings
 from src.infra.logging import get_logger
 from src.models import Side
 
@@ -43,6 +43,49 @@ def _parse_sides(raw: Any) -> tuple[Side, ...]:
     if not sides:
         raise ValueError("sides must contain UP and/or DOWN")
     return tuple(sides)
+
+
+# Global risk knobs editable from /config.  The value is the validation
+# spec used by both PUT /api/config and the persisted runtime file.
+_RISK_UPDATE_SPECS: dict[str, dict[str, Any]] = {
+    "max_daily_loss_usd": {"minimum": 0.0},
+    "max_intraday_drawdown_usd": {"minimum": 0.0},
+    "max_same_side_per_window": {"integer": True, "minimum": 0},
+    "max_positions_per_window": {"integer": True, "minimum": 0},
+    "max_window_notional_usd": {"minimum": 0.0},
+    "asset_perf_lookback_days": {"minimum": 0.0},
+    "asset_perf_min_pnl_usd": {},
+    "asset_perf_stake_mult": {"minimum": 0.0, "maximum": 1.0},
+    "asset_perf_disable_pnl_usd": {},
+}
+_RISK_FIELDS = tuple(_RISK_UPDATE_SPECS)
+
+
+def _risk_number(
+    raw: dict[str, Any],
+    key: str,
+    *,
+    integer: bool = False,
+    minimum: float | int | None = None,
+    maximum: float | int | None = None,
+) -> float | int:
+    """Parse and range-check one global risk value from a JSON payload."""
+    try:
+        number = float(raw[key])
+    except (TypeError, ValueError) as exc:
+        kind = "an integer" if integer else "a number"
+        raise ValueError(f"{key} must be {kind}") from exc
+    if integer:
+        if number != int(number):
+            raise ValueError(f"{key} must be an integer")
+        value: float | int = int(number)
+    else:
+        value = number
+    if minimum is not None and value < minimum:
+        raise ValueError(f"{key} must be >= {minimum:g}")
+    if maximum is not None and value > maximum:
+        raise ValueError(f"{key} must be <= {maximum:g}")
+    return value
 
 
 def _validate_values(
@@ -126,6 +169,13 @@ class RuntimeConfig:
         live_allowed: bool = False,
         max_daily_loss_usd: float | None = None,
         max_same_side_per_window: int | None = None,
+        max_intraday_drawdown_usd: float | None = None,
+        max_positions_per_window: int | None = None,
+        max_window_notional_usd: float | None = None,
+        asset_perf_lookback_days: float | None = None,
+        asset_perf_min_pnl_usd: float | None = None,
+        asset_perf_stake_mult: float | None = None,
+        asset_perf_disable_pnl_usd: float | None = None,
     ) -> None:
         self.path = Path(path) if path else None
         self.base: dict[str, AssetConfig] = {
@@ -143,11 +193,11 @@ class RuntimeConfig:
         self.mode = self._default_mode
         if self.mode == "live" and not self.live_allowed:
             self.mode = "paper"
-        self._default_max_daily_loss = (
+        self._default_max_daily_loss_usd = (
             max(0.0, float(max_daily_loss_usd))
             if max_daily_loss_usd is not None else 0.0
         )
-        self.max_daily_loss_usd = self._default_max_daily_loss
+        self.max_daily_loss_usd = self._default_max_daily_loss_usd
         self._default_max_same_side_per_window = (
             max(0, int(max_same_side_per_window))
             if max_same_side_per_window is not None else None
@@ -155,7 +205,54 @@ class RuntimeConfig:
         self.max_same_side_per_window = (
             self._default_max_same_side_per_window
         )
+        # None means "not overridden here": the runner falls back to the
+        # config.toml / .env value.
+        initial: dict[str, float | int | None] = {
+            "max_intraday_drawdown_usd": max_intraday_drawdown_usd,
+            "max_positions_per_window": max_positions_per_window,
+            "max_window_notional_usd": max_window_notional_usd,
+            "asset_perf_lookback_days": asset_perf_lookback_days,
+            "asset_perf_min_pnl_usd": asset_perf_min_pnl_usd,
+            "asset_perf_stake_mult": asset_perf_stake_mult,
+            "asset_perf_disable_pnl_usd": asset_perf_disable_pnl_usd,
+        }
+        casters = {
+            "max_intraday_drawdown_usd": lambda v: max(0.0, float(v)),
+            "max_positions_per_window": lambda v: max(0, int(v)),
+            "max_window_notional_usd": lambda v: max(0.0, float(v)),
+            "asset_perf_lookback_days": lambda v: max(0.0, float(v)),
+            "asset_perf_min_pnl_usd": float,
+            "asset_perf_stake_mult": lambda v: min(1.0, max(0.0, float(v))),
+            "asset_perf_disable_pnl_usd": float,
+        }
+        for field, caster in casters.items():
+            raw = initial[field]
+            default = None if raw is None else caster(raw)
+            setattr(self, f"_default_{field}", default)
+            setattr(self, field, default)
         self.load()
+
+    @classmethod
+    def from_settings(
+        cls, path: str | Path, settings: Settings
+    ) -> "RuntimeConfig":
+        """Build the runtime state with every config.toml default applied."""
+        e = settings.execution
+        return cls(
+            path,
+            settings.assets,
+            default_mode=settings.mode,
+            live_allowed=settings.live,
+            max_daily_loss_usd=e.max_daily_loss_usd,
+            max_same_side_per_window=e.max_same_side_per_window,
+            max_intraday_drawdown_usd=e.max_intraday_drawdown_usd,
+            max_positions_per_window=e.max_positions_per_window,
+            max_window_notional_usd=e.max_window_notional_usd,
+            asset_perf_lookback_days=e.asset_perf_lookback_days,
+            asset_perf_min_pnl_usd=e.asset_perf_min_pnl_usd,
+            asset_perf_stake_mult=e.asset_perf_stake_mult,
+            asset_perf_disable_pnl_usd=e.asset_perf_disable_pnl_usd,
+        )
 
     # ── reads ──────────────────────────────────────────────────────────
     def asset(self, name: str) -> AssetConfig:
@@ -209,30 +306,12 @@ class RuntimeConfig:
         """Apply ``{"assets": {NAME: {...}}}`` / global risk fields."""
         if not isinstance(payload, dict):
             raise ValueError("payload must be an object")
-        has_global = "max_daily_loss_usd" in payload
-        if has_global:
-            try:
-                limit = float(payload["max_daily_loss_usd"])
-            except (TypeError, ValueError) as exc:
-                raise ValueError(
-                    "max_daily_loss_usd must be a number"
-                ) from exc
-            if limit < 0:
-                raise ValueError("max_daily_loss_usd must be >= 0")
-            self.max_daily_loss_usd = limit
-        if "max_same_side_per_window" in payload:
-            try:
-                window_limit = int(payload["max_same_side_per_window"])
-            except (TypeError, ValueError) as exc:
-                raise ValueError(
-                    "max_same_side_per_window must be an integer"
-                ) from exc
-            if window_limit < 0:
-                raise ValueError(
-                    "max_same_side_per_window must be >= 0"
-                )
-            self.max_same_side_per_window = window_limit
-        has_global = has_global or "max_same_side_per_window" in payload
+        has_global = False
+        for field, spec in _RISK_UPDATE_SPECS.items():
+            if field not in payload:
+                continue
+            setattr(self, field, _risk_number(payload, field, **spec))
+            has_global = True
         assets_raw = payload.get("assets", {} if has_global else payload)
         if not isinstance(assets_raw, dict):
             raise ValueError("assets must be an object")
@@ -278,19 +357,14 @@ class RuntimeConfig:
 
     def reset(self) -> list[dict[str, Any]]:
         self.overrides = {}
-        self.max_daily_loss_usd = self._default_max_daily_loss
-        self.max_same_side_per_window = (
-            self._default_max_same_side_per_window
-        )
+        for field in _RISK_FIELDS:
+            setattr(self, field, getattr(self, f"_default_{field}"))
         self.version += 1
         self.updated_at = time.time()
         if self.path is not None:
-            if (self.mode != self._default_mode
-                    or self.max_daily_loss_usd != self._default_max_daily_loss
-                    or self.max_same_side_per_window
-                    != self._default_max_same_side_per_window):
-                # Keep a non-default paper/live selection or risk cap across
-                # a reset of the asset overrides.
+            if self.mode != self._default_mode:
+                # Keep a non-default paper/live selection across a reset
+                # of the asset overrides and risk caps.
                 self._save()
             else:
                 try:
@@ -319,20 +393,18 @@ class RuntimeConfig:
             self.mode = "paper"
         elif mode == "live" and self.live_allowed:
             self.mode = "live"
-        if raw.get("max_daily_loss_usd") is not None:
+        for field, spec in _RISK_UPDATE_SPECS.items():
+            if raw.get(field) is None:
+                continue
             try:
-                limit = float(raw["max_daily_loss_usd"])
-            except (TypeError, ValueError):
-                limit = self._default_max_daily_loss
-            if limit >= 0:
-                self.max_daily_loss_usd = limit
-        if raw.get("max_same_side_per_window") is not None:
-            try:
-                window_limit = int(raw["max_same_side_per_window"])
-            except (TypeError, ValueError):
-                window_limit = self._default_max_same_side_per_window
-            if window_limit is not None and window_limit >= 0:
-                self.max_same_side_per_window = window_limit
+                setattr(self, field, _risk_number(raw, field, **spec))
+            except ValueError as exc:
+                self.last_error = str(exc)
+                log.warning(
+                    "runtime_config.risk_skipped field={} error={}",
+                    field,
+                    exc,
+                )
         assets_raw = raw.get("assets") or {}
         if not isinstance(assets_raw, dict):
             return
@@ -368,8 +440,7 @@ class RuntimeConfig:
             "version": max(1, self.version),
             "updated_at": self.updated_at or time.time(),
             "mode": self.mode,
-            "max_daily_loss_usd": self.max_daily_loss_usd,
-            "max_same_side_per_window": self.max_same_side_per_window,
+            **{field: getattr(self, field) for field in _RISK_FIELDS},
             "assets": {
                 row["asset"]: {
                     "enabled": row["enabled"],
