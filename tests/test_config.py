@@ -42,12 +42,12 @@ def test_doc_defaults_load():
         assert cfg.tp_pct == pytest.approx(tp)
         assert cfg.stop_loss_pct == pytest.approx(sl)
 
-    # 15m still uses the coin-level defaults until it gets its own backtest.
-    assert by_market["ETH-15M"].entry_thresh == pytest.approx(0.18)
-    assert by_market["ETH-15M"].tp_pct == pytest.approx(0.15)
+    # 15m defaults: entry 0.10 / TP 10% / no stop (operator setting).
+    assert by_market["ETH-15M"].entry_thresh == pytest.approx(0.10)
+    assert by_market["ETH-15M"].tp_pct == pytest.approx(0.10)
     assert by_market["ETH-15M"].stop_loss_pct == pytest.approx(0.0)
-    assert by_market["HYPE-15M"].entry_thresh == pytest.approx(0.14)
-    assert by_market["HYPE-15M"].tp_pct == pytest.approx(0.25)
+    assert by_market["HYPE-15M"].entry_thresh == pytest.approx(0.10)
+    assert by_market["HYPE-15M"].tp_pct == pytest.approx(0.10)
     assert by_market["BTC-5M"].stop_loss_pct == pytest.approx(0.0)
 
     # Default deployment enables only the six non-BTC 5m markets.  BTC is
