@@ -96,6 +96,36 @@ def test_daily_stats_peak_pnl_roundtrip_and_legacy(tmp_path):
     assert legacy.peak_pnl == pytest.approx(3.0)
 
 
+def test_daily_stats_live_series_roundtrip_and_legacy(tmp_path):
+    stats = DailyStats()
+    stats.add(-2.0, -2.0, 0.5, mode="paper")
+    stats.add(1.0, 1.0, 0.1, mode="live")
+    stats.add(-3.0, -3.0, 0.1, mode="live")
+    # Aggregates keep paper + live; the risk series is live-only.
+    assert stats.realized_pnl == pytest.approx(-4.0)
+    assert stats.live_realized_pnl == pytest.approx(-2.0)
+    assert stats.live_peak_pnl == pytest.approx(1.0)
+
+    store = StateStore(tmp_path)
+    store.save([], {"2026-11-04": stats})
+    _, loaded = store.load()
+    restored = loaded["2026-11-04"]
+    assert restored.live_realized_pnl == pytest.approx(-2.0)
+    assert restored.live_peak_pnl == pytest.approx(1.0)
+
+    # Legacy rows without live_* keys reuse the aggregate risk state.
+    legacy = DailyStats.from_dict(
+        {
+            "realized_pnl": -5.0,
+            "peak_pnl": 2.0,
+            "drawdown_pause_until": 123.0,
+        }
+    )
+    assert legacy.live_realized_pnl == pytest.approx(-5.0)
+    assert legacy.live_peak_pnl == pytest.approx(2.0)
+    assert legacy.live_drawdown_pause_until == pytest.approx(123.0)
+
+
 def test_trade_append(tmp_path):
     store = StateStore(tmp_path)
     record = TradeRecord(

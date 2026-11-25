@@ -48,12 +48,15 @@ class FakePos:
         *,
         window_sec: int = 300,
         cost_usd: float = 0.0,
+        mode: str = "",
     ) -> None:
         self.side = side
         self.window_start = window_start
         self.window_sec = window_sec
         self.window_end = window_start + window_sec
         self.cost_usd = cost_usd
+        # Empty mode follows the runner convention: counts as live.
+        self.mode = mode
 
     @property
     def window_key(self) -> tuple[int, int]:
@@ -636,7 +639,10 @@ def test_intraday_drawdown_pauses_then_resumes(tmp_path):
     runner = _multi_runner(settings, tmp_path)
     now = float(T0)
     today = day_key(now)
-    runner.daily[today] = DailyStats(realized_pnl=1.0, peak_pnl=10.0)
+    runner.daily[today] = DailyStats(
+        realized_pnl=1.0, peak_pnl=10.0,
+        live_realized_pnl=1.0, live_peak_pnl=10.0,
+    )
     assert runner.intraday_drawdown(now) == pytest.approx(9.0)
     assert settings.execution.max_intraday_drawdown_usd == pytest.approx(8.0)
     assert settings.execution.intraday_drawdown_pause_min == pytest.approx(
@@ -645,7 +651,7 @@ def test_intraday_drawdown_pauses_then_resumes(tmp_path):
 
     # Trigger: entries pause for the configured cooldown.
     assert runner.entries_allowed(now=now) == (False, "intraday-drawdown")
-    assert runner.daily[today].drawdown_pause_until == pytest.approx(
+    assert runner.daily[today].live_drawdown_pause_until == pytest.approx(
         now + 3600.0
     )
     assert runner.entries_allowed(now=now + 3599.0) == (
@@ -655,14 +661,135 @@ def test_intraday_drawdown_pauses_then_resumes(tmp_path):
     # Cooldown over: entries resume and the anchor is rebased to the
     # current PnL instead of re-triggering on the old peak.
     assert runner.entries_allowed(now=now + 3601.0) == (True, "ok")
-    assert runner.daily[today].peak_pnl == pytest.approx(1.0)
-    assert runner.daily[today].drawdown_pause_until == 0.0
+    assert runner.daily[today].live_peak_pnl == pytest.approx(1.0)
+    assert runner.daily[today].live_drawdown_pause_until == 0.0
 
     # A fresh drawdown of the same size triggers a new pause.
-    runner.daily[today].add(-8.0, -8.0, 0.0)
+    runner.daily[today].add(-8.0, -8.0, 0.0, mode="live")
     assert runner.daily[today].realized_pnl == pytest.approx(-7.0)
     assert runner.entries_allowed(now=now + 4200.0) == (
         False, "intraday-drawdown",
+    )
+
+
+def test_daily_loss_and_drawdown_block_live_only(tmp_path):
+    """Paper markets bypass the global daily-loss / drawdown gates."""
+    settings = _risk_settings(max_intraday_drawdown_usd=0.0)
+    runtime = RuntimeConfig(
+        tmp_path / "runtime_config.json",
+        settings.assets,
+        max_daily_loss_usd=5.0,
+    )
+    runner = MultiAssetRunner(
+        settings,
+        None,
+        PriceCache(),
+        FakeMarketService(_window()),
+        FakeBroker(),
+        StateStore(tmp_path),
+        runtime=runtime,
+    )
+    now = float(T0)
+    runner.daily[day_key(now)] = DailyStats(live_realized_pnl=-6.0)
+    assert runner.entries_allowed(now=now) == (False, "daily-loss-limit")
+    assert runner.entries_allowed(now=now, mode="paper") == (True, "ok")
+
+
+@pytest.mark.asyncio
+async def test_paper_market_enters_despite_live_loss_limit(tmp_path):
+    """The can_enter wiring passes the market's mode, not a global one."""
+    settings = _risk_settings(max_intraday_drawdown_usd=0.0)
+    runtime = RuntimeConfig(
+        tmp_path / "runtime_config.json",
+        settings.assets,
+        max_daily_loss_usd=5.0,
+    )
+    cache = PriceCache()
+    cache.set_best_bid_ask("down-token", 0.23, 0.24, ts=T0 + 10)
+    broker = FakeBroker()  # paper
+    runner = MultiAssetRunner(
+        settings,
+        None,
+        cache,
+        FakeMarketService(_window()),
+        broker,
+        StateStore(tmp_path),
+        runtime=runtime,
+    )
+    runner.daily[day_key(time.time())] = DailyStats(
+        live_realized_pnl=-6.0
+    )
+    await runner.markets["BTC-5M"].tick(T0 + 10)
+    assert len(broker.buys) == 1
+
+
+@pytest.mark.asyncio
+async def test_live_market_blocked_by_live_loss_limit(tmp_path):
+    settings = _risk_settings(max_intraday_drawdown_usd=0.0)
+    runtime = RuntimeConfig(
+        tmp_path / "runtime_config.json",
+        settings.assets,
+        max_daily_loss_usd=5.0,
+    )
+    cache = PriceCache()
+    cache.set_best_bid_ask("down-token", 0.23, 0.24, ts=T0 + 10)
+    broker = FakeBroker()
+    broker.mode = "live"
+    runner = MultiAssetRunner(
+        settings,
+        None,
+        cache,
+        FakeMarketService(_window()),
+        broker,
+        StateStore(tmp_path),
+        runtime=runtime,
+    )
+    runner.daily[day_key(time.time())] = DailyStats(
+        live_realized_pnl=-6.0
+    )
+    await runner.markets["BTC-5M"].tick(T0 + 10)
+    assert broker.buys == []
+
+
+@pytest.mark.asyncio
+async def test_paper_positions_do_not_consume_the_global_caps(tmp_path):
+    settings = _risk_settings(
+        max_same_side_positions=0,
+        max_same_side_per_window=0,
+        max_positions_per_window=0,
+        max_window_notional_usd=0.0,
+        max_open_positions=1,
+        max_open_notional_usd=0.0,
+    )
+    runner = _multi_runner(settings, tmp_path)
+    runner.all_positions = lambda: [  # type: ignore[method-assign]
+        FakePos(Side.DOWN, T0, cost_usd=5.0, mode="paper")
+    ]
+    assert runner.same_side_open(Side.DOWN) == 0
+    assert runner.global_open_exposure() == (0, 0.0)
+    assert await runner.reserve_entry(Side.DOWN, (300, T0)) == (True, "")
+
+
+@pytest.mark.asyncio
+async def test_paper_entries_do_not_consume_the_global_caps(tmp_path):
+    settings = _risk_settings(
+        max_same_side_positions=0,
+        max_same_side_per_window=0,
+        max_positions_per_window=0,
+        max_window_notional_usd=0.0,
+        max_open_positions=1,
+        max_open_notional_usd=0.0,
+    )
+    runner = _multi_runner(settings, tmp_path)
+    runner.all_positions = lambda: []  # type: ignore[method-assign]
+    for _ in range(3):
+        assert await runner.reserve_entry(
+            Side.DOWN, (300, T0), mode="paper"
+        ) == (True, "")
+    assert runner._all_reserved() == (0, 0.0)
+    assert await runner.reserve_entry(Side.UP, (300, T0)) == (True, "")
+    assert await runner.reserve_entry(Side.DOWN, (300, T0)) == (
+        False, "open-position-limit",
     )
 
 
@@ -673,16 +800,20 @@ def test_intraday_drawdown_pause_zero_disables(tmp_path):
     runner = _multi_runner(settings, tmp_path)
     now = float(T0)
     runner.daily[day_key(now)] = DailyStats(
-        realized_pnl=-20.0, peak_pnl=10.0
+        realized_pnl=-20.0, peak_pnl=10.0,
+        live_realized_pnl=-20.0, live_peak_pnl=10.0,
     )
     assert runner.entries_allowed(now=now) == (True, "ok")
 
 
-def _seed_trade(store: StateStore, asset: str, pnl_net: float) -> None:
+def _seed_trade(
+    store: StateStore, asset: str, pnl_net: float, mode: str = "live"
+) -> None:
     row = {
         "asset": asset,
         "exit_ts": time.time() - 60.0,
         "pnl_net": pnl_net,
+        "mode": mode,
     }
     store.trades_path.write_text(json.dumps(row) + "\n", encoding="utf-8")
 
@@ -697,6 +828,7 @@ async def test_asset_perf_downweights_stake(tmp_path):
     cache = PriceCache()
     cache.set_best_bid_ask("down-token", 0.23, 0.24, ts=T0 + 10)
     broker = FakeBroker()
+    broker.mode = "live"
     runner = MultiAssetRunner(
         settings,
         None,
@@ -728,6 +860,7 @@ async def test_asset_perf_disables_entries(tmp_path):
     cache = PriceCache()
     cache.set_best_bid_ask("down-token", 0.23, 0.24, ts=T0 + 10)
     broker = FakeBroker()
+    broker.mode = "live"
     runner = MultiAssetRunner(
         settings,
         None,
@@ -743,6 +876,54 @@ async def test_asset_perf_disables_entries(tmp_path):
     await runner.markets["BTC-5M"].tick(T0 + 10)
     assert broker.buys == []
     assert runner.markets["BTC-5M"].sides[0].last_reason == "asset-perf-disabled"
+
+
+@pytest.mark.asyncio
+async def test_asset_perf_uses_live_results_only(tmp_path):
+    settings = _risk_settings()
+    store = StateStore(tmp_path)
+    _seed_trade(store, "BTC", -7.0, mode="paper")
+    runtime = RuntimeConfig(tmp_path / "runtime_config.json", settings.assets)
+    broker = FakeBroker()
+    broker.mode = "live"
+    runner = MultiAssetRunner(
+        settings,
+        None,
+        PriceCache(),
+        FakeMarketService(_window()),
+        broker,
+        store,
+        runtime=runtime,
+    )
+    assert runner.asset_rolling_pnl("BTC") == pytest.approx(0.0)
+    assert runner.asset_perf_policy("BTC") == (True, 1.0, "")
+
+
+@pytest.mark.asyncio
+async def test_asset_perf_skips_paper_markets(tmp_path):
+    settings = _risk_settings()
+    store = StateStore(tmp_path)
+    _seed_trade(store, "BTC", -7.0, mode="live")
+    runtime = RuntimeConfig(tmp_path / "runtime_config.json", settings.assets)
+    cache = PriceCache()
+    cache.set_best_bid_ask("down-token", 0.23, 0.24, ts=T0 + 10)
+    broker = FakeBroker()  # paper market
+    runner = MultiAssetRunner(
+        settings,
+        None,
+        cache,
+        FakeMarketService(_window()),
+        broker,
+        store,
+        runtime=runtime,
+    )
+    # The live rule is disabled, but the paper market ignores it.
+    assert runner.asset_perf_policy("BTC") == (
+        False, 0.0, "asset-perf-disabled",
+    )
+    assert runner.asset_perf_snapshot() == {}
+    await runner.markets["BTC-5M"].tick(T0 + 10)
+    assert len(broker.buys) == 1
 
 
 @pytest.mark.asyncio

@@ -444,8 +444,16 @@ class DailyStats:
     # expires, peak_pnl is rebased to the current realized PnL so the
     # next pause needs a fresh drawdown of the same size.
     drawdown_pause_until: float = 0.0
+    # Live-only risk series: the global risk caps apply to live markets
+    # only, so the daily-loss / drawdown checks read these fields while
+    # the aggregate fields above keep showing paper + live for the UI.
+    live_realized_pnl: float = 0.0
+    live_peak_pnl: float = 0.0
+    live_drawdown_pause_until: float = 0.0
 
-    def add(self, pnl_net: float, pnl_gross: float, fee: float) -> None:
+    def add(
+        self, pnl_net: float, pnl_gross: float, fee: float, mode: str = ""
+    ) -> None:
         self.realized_pnl += pnl_net
         self.gross_pnl += pnl_gross
         self.fees += fee
@@ -455,6 +463,11 @@ class DailyStats:
         elif pnl_net < 0:
             self.losses += 1
         self.peak_pnl = max(self.peak_pnl, self.realized_pnl)
+        if str(mode or "").strip().lower() == "live":
+            self.live_realized_pnl += pnl_net
+            self.live_peak_pnl = max(
+                self.live_peak_pnl, self.live_realized_pnl
+            )
 
     def to_dict(self) -> dict[str, Any]:
         return {
@@ -466,6 +479,11 @@ class DailyStats:
             "fees": round(self.fees, 6),
             "peak_pnl": round(self.peak_pnl, 6),
             "drawdown_pause_until": round(self.drawdown_pause_until, 3),
+            "live_realized_pnl": round(self.live_realized_pnl, 6),
+            "live_peak_pnl": round(self.live_peak_pnl, 6),
+            "live_drawdown_pause_until": round(
+                self.live_drawdown_pause_until, 3
+            ),
         }
 
     @classmethod
@@ -476,6 +494,23 @@ class DailyStats:
         # positive realized PnL as having been the peak: a legacy file
         # must not look like a drawdown of its whole profit.
         peak = float(raw.get("peak_pnl", 0.0) or 0.0)
+        # State files written before live-only risk have no live_* keys.
+        # Reuse the aggregate series so an upgrade cannot hand back a
+        # fresh daily-loss / drawdown budget mid-day.
+        if "live_realized_pnl" in raw:
+            live_realized = float(raw.get("live_realized_pnl", 0.0) or 0.0)
+            live_peak = max(
+                float(raw.get("live_peak_pnl", 0.0) or 0.0), live_realized
+            )
+            live_pause = float(
+                raw.get("live_drawdown_pause_until", 0.0) or 0.0
+            )
+        else:
+            live_realized = realized
+            live_peak = max(peak, realized)
+            live_pause = float(
+                raw.get("drawdown_pause_until", 0.0) or 0.0
+            )
         return cls(
             realized_pnl=realized,
             trades=int(raw.get("trades", 0)),
@@ -487,4 +522,7 @@ class DailyStats:
             drawdown_pause_until=float(
                 raw.get("drawdown_pause_until", 0.0) or 0.0
             ),
+            live_realized_pnl=live_realized,
+            live_peak_pnl=live_peak,
+            live_drawdown_pause_until=live_pause,
         )

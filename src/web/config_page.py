@@ -55,22 +55,26 @@ _BODY = r"""
 </div>
 
 <div class="section">
-  <h2>全局风控</h2>
+  <h2>全局风控 <span class="pill blue">仅实盘市场</span></h2>
+  <div class="control-meta" style="margin-bottom:8px">
+    以下规则只统计并拦截实盘市场；纸盘市场不受这些限制（手动暂停和
+    kill switch 仍然全局生效）。
+  </div>
   <div class="controls" style="margin:0">
     <span>当日亏损上限
       <input id="daily-loss" type="number" min="0" step="1"
              style="width:90px" value="40"> U
     </span>
-    <span class="control-meta">按 UTC 日统计；当天已实现净亏损达到该值后
-      停止新开仓（0=不限制），已有仓位照常管理。</span>
+    <span class="control-meta">按 UTC 日统计实盘已实现净亏损；达到该值后
+      停止实盘新开仓（0=不限制），已有仓位照常管理。</span>
   </div>
   <div class="controls" style="margin:8px 0 0">
     <span>单窗同向上限
       <input id="window-side-limit" type="number" min="0" step="1"
              style="width:80px" value="2"> 笔
     </span>
-    <span class="control-meta">同一市场窗口内（5m 与 15m 分别计数）同方向最多
-      N 笔（含在途入场，0=不限），修改后立即影响下一次入场判断。</span>
+    <span class="control-meta">同一市场窗口内（5m 与 15m 分别计数）实盘
+      同方向最多 N 笔（含在途入场，0=不限），修改后立即影响下一次入场判断。</span>
   </div>
   <div class="controls" style="margin:8px 0 0">
     <span>日内回撤暂停
@@ -79,9 +83,9 @@ _BODY = r"""
       <input id="drawdown-pause" type="number" min="0" step="5"
              style="width:80px" value="60"> 分钟
     </span>
-    <span class="control-meta">UTC 当日已实现 PnL 从日内高点回落达到该值后
-      停止新开仓（0=不限）；暂停到期后自动恢复，并以恢复时的 PnL 重置
-      回撤基准，已有仓位照常管理。</span>
+    <span class="control-meta">UTC 当日实盘已实现 PnL 从日内高点回落达到该值后
+      停止实盘新开仓（0=不限）；暂停到期后自动恢复，并以恢复时的实盘 PnL
+      重置回撤基准，已有仓位照常管理。</span>
   </div>
   <div class="controls" style="margin:8px 0 0">
     <span>单窗总笔数
@@ -92,7 +96,7 @@ _BODY = r"""
       <input id="window-notional-limit" type="number" min="0" step="1"
              style="width:90px" value="6"> U
     </span>
-    <span class="control-meta">同一市场窗口内双向、所有市场合计
+    <span class="control-meta">同一市场窗口内实盘双向、所有实盘市场合计
       （5m 与 15m 分开计数，含在途入场，0=不限制）。</span>
   </div>
   <div class="controls" style="margin:8px 0 0">
@@ -104,14 +108,14 @@ _BODY = r"""
       <input id="open-notional-limit" type="number" min="0" step="1"
              style="width:90px" value="10"> U
     </span>
-    <span class="control-meta">跨 5m + 15m、双向、所有市场合计；含在途入场和
-      等待结算的仓位（0=不限制）。这是全部市场的合计风险上限。</span>
+    <span class="control-meta">跨 5m + 15m、双向、仅实盘市场合计；含在途入场和
+      等待结算的仓位（0=不限制）。这是实盘市场的合计风险上限。</span>
   </div>
   <div class="controls" style="margin:8px 0 0">
     <span>按币滚动表现降权</span>
-    <span class="control-meta">回看
+    <span class="control-meta">（仅实盘）回看
       <input id="perf-lookback" type="number" min="0" step="1"
-             style="width:70px" value="7"> 天，已实现净 PnL ≤
+             style="width:70px" value="7"> 天实盘已实现净 PnL ≤
       <input id="perf-min-pnl" type="number" step="1"
              style="width:80px" value="-3"> U 时仓位 ×
       <input id="perf-stake-mult" type="number" min="0" max="1" step="0.1"
@@ -123,8 +127,9 @@ _BODY = r"""
 </div>
 
 <div class="alert info">
-  <b>生效时机：</b>启用/关闭与全局风控（日亏损、回撤、单窗/全局并发上限）
-  <b>立即</b> 影响下一次入场判断；方向、entry、TP、止损、每笔仓位在
+  <b>生效时机：</b>启用/关闭与全局风控（仅实盘市场：日亏损、回撤、
+  单窗/全局并发上限）<b>立即</b> 影响下一次入场判断；方向、entry、TP、
+  止损、每笔仓位在
   <b>该市场下一个窗口</b> 生效。已有仓位始终按原参数止盈/止损，未触发的
   剩余份额在窗口结束后按 Gamma 0/1 结算。密钥、端口、`TP_EXECUTION_MODE` 和
   流动性过滤不在本页，需改 <span class="mono">.env</span> /

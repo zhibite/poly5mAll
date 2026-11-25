@@ -74,6 +74,21 @@ def _default_stake_policy(asset: str) -> tuple[bool, float, str]:
     return True, 1.0, ""
 
 
+def _is_live_mode(mode: str | None) -> bool:
+    """True when global risk applies.
+
+    Paper markets are observation-only, so the global risk caps neither
+    count nor block them.  An empty mode (legacy state written before
+    per-market modes) counts as live: keeping it under the caps is the
+    conservative side.
+    """
+    return str(mode or "").strip().lower() != "paper"
+
+
+def _is_live_pos(pos: Any) -> bool:
+    return _is_live_mode(getattr(pos, "mode", ""))
+
+
 class AssetRunner:
     """The strategy loop for one market (coin × timeframe)."""
 
@@ -1028,25 +1043,50 @@ class MultiAssetRunner:
                 if callable(broker_for)
                 else broker
             )
-            self.markets[asset_cfg.market] = AssetRunner(
+            market = asset_cfg.market
+            self.markets[market] = AssetRunner(
                 asset_cfg,
                 settings,
                 market_broker,
                 cache,
                 market_service,
                 store,
-                can_enter=self.entries_allowed,
+                # The global risk callbacks are mode-aware: paper markets
+                # bypass the caps, live markets consume the shared budget.
+                can_enter=lambda side=None, _m=market: self.entries_allowed(
+                    side, mode=self._market_mode(_m)
+                ),
                 on_trade=self._on_trade,
                 on_state_change=self._save_state,
                 runtime=self.runtime,
-                reserve_entry=self.reserve_entry,
-                release_entry=self.release_entry,
-                stake_policy=self.asset_perf_policy,
+                reserve_entry=(
+                    lambda side, key, notional=0.0, _m=market: self.reserve_entry(
+                        side, key, notional, mode=self._market_mode(_m)
+                    )
+                ),
+                release_entry=(
+                    lambda side, key, _m=market: self.release_entry(
+                        side, key, mode=self._market_mode(_m)
+                    )
+                ),
+                stake_policy=(
+                    lambda asset, _m=market: self.asset_perf_policy(
+                        asset, mode=self._market_mode(_m)
+                    )
+                ),
             )
 
+    def _market_mode(self, market: str) -> str:
+        """Current execution mode of one market (for the risk callbacks)."""
+        runner = self.markets.get(str(market).upper())
+        return runner.mode if runner is not None else "live"
+
     def same_side_open(self, side: Side) -> int:
+        """Live open positions on one side (global risk scope)."""
         return sum(
-            1 for pos in self.all_positions() if pos.side is side
+            1
+            for pos in self.all_positions()
+            if pos.side is side and _is_live_pos(pos)
         )
 
     def same_side_open_in_window(
@@ -1060,21 +1100,24 @@ class MultiAssetRunner:
         return sum(
             1
             for pos in self.all_positions()
-            if pos.side is side and pos.window_key == window_key
+            if pos.side is side
+            and pos.window_key == window_key
+            and _is_live_pos(pos)
         )
 
     def positions_in_window(
         self, window_key: tuple[int, int]
     ) -> list[Position]:
-        """Open positions (both sides, all markets) in one window.
+        """Live open positions (both sides, all markets) in one window.
 
         ``window_key`` is ``(window_sec, start_ts)``: a 5m and a 15m
-        window that start together are counted separately.
+        window that start together are counted separately.  Paper
+        positions are outside the global risk scope.
         """
         return [
             pos
             for pos in self.all_positions()
-            if pos.window_key == window_key
+            if pos.window_key == window_key and _is_live_pos(pos)
         ]
 
     def window_open_notional(self, window_key: tuple[int, int]) -> float:
@@ -1113,12 +1156,13 @@ class MultiAssetRunner:
         return count, notional
 
     def global_open_exposure(self) -> tuple[int, float]:
-        """(open positions + in-flight entries, cost + reserved notional).
+        """(live open positions + in-flight entries, cost + reserved notional).
 
         Covers BOTH timeframes and both sides.  Positions waiting for
         settlement still count: their 0/1 outcome is not known yet.
+        Paper markets are outside the global risk scope.
         """
-        positions = self.all_positions()
+        positions = [pos for pos in self.all_positions() if _is_live_pos(pos)]
         reserved_count, reserved_notional = self._all_reserved()
         notional = sum(
             float(getattr(pos, "cost_usd", 0.0) or 0.0)
@@ -1134,8 +1178,9 @@ class MultiAssetRunner:
         side: Side,
         window_key: tuple[int, int],
         notional: float = 0.0,
+        mode: str = "live",
     ) -> tuple[bool, str]:
-        """Reserve one entry slot for ``window_key``.
+        """Reserve one entry slot for ``window_key`` (live markets only).
 
         Six caps apply (0 disables each): the global concurrent open
         position / notional caps across both timeframes, the global
@@ -1143,8 +1188,11 @@ class MultiAssetRunner:
         entries per window across both sides / all markets, and the total
         entry notional per window.  In-flight attempts count too, so two
         markets cannot both pass the check at the same moment.  Returns
-        ``(ok, reason)``.
+        ``(ok, reason)``.  Paper entries neither consume nor are blocked
+        by the global risk budget.
         """
+        if not _is_live_mode(mode):
+            return True, ""
         e = self.settings.execution
         limit_total = int(e.max_same_side_positions)
         limit_open = self.max_open_positions
@@ -1210,8 +1258,10 @@ class MultiAssetRunner:
             return True, ""
 
     async def release_entry(
-        self, side: Side, window_key: tuple[int, int]
+        self, side: Side, window_key: tuple[int, int], mode: str = "live"
     ) -> None:
+        if not _is_live_mode(mode):
+            return
         key = (side, (int(window_key[0]), int(window_key[1])))
         async with self._entry_lock:
             amounts = self._entry_reservations.get(key)
@@ -1391,6 +1441,9 @@ class MultiAssetRunner:
                 pnl = float(row.get("pnl_net") or 0.0)
             except (TypeError, ValueError):
                 continue
+            # Only live results feed the live risk downweight.
+            if not _is_live_mode(row.get("mode")):
+                continue
             asset = str(row.get("asset") or "").strip().upper()
             if asset and ts > 0:
                 self._asset_pnl.append((ts, asset, pnl))
@@ -1415,13 +1468,16 @@ class MultiAssetRunner:
         )
 
     def asset_perf_policy(
-        self, asset: str, now: float | None = None
+        self, asset: str, now: float | None = None, mode: str = "live"
     ) -> tuple[bool, float, str]:
         """(allowed, stake multiplier, reason) for this asset's entries.
 
-        Downweights once the rolling PnL is at or below the soft threshold;
-        skips the asset entirely at or below the hard (disable) threshold.
+        Downweights once the rolling live PnL is at or below the soft
+        threshold; skips the asset entirely at or below the hard (disable)
+        threshold.  Paper markets are outside the global risk scope.
         """
+        if not _is_live_mode(mode):
+            return True, 1.0, ""
         if self.asset_perf_lookback_days <= 0:
             return True, 1.0, ""
         pnl = self.asset_rolling_pnl(asset, now)
@@ -1448,8 +1504,12 @@ class MultiAssetRunner:
             return {}
         out: dict[str, dict[str, Any]] = {}
         for market, runner in self.markets.items():
+            # The tag only applies to live markets; paper entries are not
+            # downweighted by the global risk rule.
+            if not runner.is_live:
+                continue
             allowed, mult, reason = self.asset_perf_policy(
-                runner.asset, now
+                runner.asset, now, mode="live"
             )
             out[market] = {
                 "asset": runner.asset,
@@ -1556,12 +1616,12 @@ class MultiAssetRunner:
         return sold
 
     def intraday_drawdown(self, now: float | None = None) -> float:
-        """How far today's realized PnL sits below its high-water mark."""
+        """How far today's live realized PnL sits below its high-water mark."""
         now_f = time.time() if now is None else float(now)
         stats = self.daily.get(day_key(now_f))
         if stats is None:
             return 0.0
-        return max(0.0, stats.peak_pnl - stats.realized_pnl)
+        return max(0.0, stats.live_peak_pnl - stats.live_realized_pnl)
 
     def _drawdown_paused(self, today: DailyStats, now_f: float) -> bool:
         """Apply or expire the intraday drawdown cooldown.
@@ -1576,21 +1636,21 @@ class MultiAssetRunner:
         cooldown_min = self.intraday_drawdown_pause_min
         if limit <= 0 or cooldown_min <= 0:
             return False
-        if today.drawdown_pause_until > now_f:
+        if today.live_drawdown_pause_until > now_f:
             return True
-        if today.drawdown_pause_until > 0:
-            today.peak_pnl = today.realized_pnl
-            today.drawdown_pause_until = 0.0
+        if today.live_drawdown_pause_until > 0:
+            today.live_peak_pnl = today.live_realized_pnl
+            today.live_drawdown_pause_until = 0.0
             self._save_state()
             log.warning(
                 "intraday drawdown cooldown over; entries resumed "
                 "(anchor={:+.4f}U)",
-                today.peak_pnl,
+                today.live_peak_pnl,
             )
             return False
-        drawdown = today.peak_pnl - today.realized_pnl
+        drawdown = today.live_peak_pnl - today.live_realized_pnl
         if drawdown >= limit - 1e-9:
-            today.drawdown_pause_until = now_f + cooldown_min * 60.0
+            today.live_drawdown_pause_until = now_f + cooldown_min * 60.0
             self._save_state()
             log.warning(
                 "intraday drawdown {:.4f}U >= {:.4f}U; entries paused "
@@ -1598,26 +1658,37 @@ class MultiAssetRunner:
                 drawdown,
                 limit,
                 cooldown_min,
-                utc_iso(today.drawdown_pause_until),
+                utc_iso(today.live_drawdown_pause_until),
             )
             return True
         return False
 
     def entries_allowed(
-        self, side: Side | None = None, now: float | None = None
+        self,
+        side: Side | None = None,
+        now: float | None = None,
+        mode: str = "live",
     ) -> tuple[bool, str]:
+        """Entry gate for one market mode.
+
+        The manual pause and the kill switch always apply.  The daily
+        loss / intraday drawdown caps are global risk controls and cover
+        live markets only; paper markets bypass them.
+        """
         e = self.settings.execution
         if self.pause_new_entries:
             return False, self.pause_reason or "paused"
         kill_path = self.settings.resolve_path(e.kill_switch_file)
         if e.kill_switch_file and kill_path.exists():
             return False, "kill-switch"
+        if not _is_live_mode(mode):
+            return True, "ok"
         now_f = time.time() if now is None else float(now)
         today = self.daily.get(day_key(now_f))
         if today is None:
             return True, "ok"
         limit = self.max_daily_loss_usd
-        if limit > 0 and today.realized_pnl <= -limit:
+        if limit > 0 and today.live_realized_pnl <= -limit:
             return False, "daily-loss-limit"
         if self._drawdown_paused(today, now_f):
             return False, "intraday-drawdown"
@@ -1625,15 +1696,22 @@ class MultiAssetRunner:
 
     def _on_trade(self, record: TradeRecord) -> None:
         self.store.append_trade(record)
-        self._asset_pnl.append(
-            (float(record.exit_ts), record.asset.upper(), float(record.pnl_net))
-        )
+        if _is_live_mode(record.mode):
+            # The rolling per-asset rule is a live risk control.
+            self._asset_pnl.append(
+                (
+                    float(record.exit_ts),
+                    record.asset.upper(),
+                    float(record.pnl_net),
+                )
+            )
         day = day_key(record.exit_ts)
         stats = self.daily.setdefault(day, DailyStats())
         stats.add(
             record.pnl_net,
             record.pnl_gross,
             record.entry_fee + record.exit_fee,
+            record.mode,
         )
         log.info(
             "[TRADE] {} {} {} reason={} pnl_net={:+.4f}U pnl_gross={:+.4f}U "
@@ -2069,10 +2147,11 @@ class MultiAssetRunner:
 
     def status_payload(self, now: float | None = None) -> dict[str, Any]:
         now_f = time.time() if now is None else float(now)
+        # The status gate reflects the live risk scope (paper bypasses it).
         allowed, reason = self.entries_allowed(now=now_f)
         today_stats = self.daily.get(day_key(now_f))
         pause_until = (
-            today_stats.drawdown_pause_until
+            today_stats.live_drawdown_pause_until
             if today_stats is not None
             else 0.0
         )

@@ -170,12 +170,37 @@ const intervalRank = (a) => {
   return name === '5m' ? 0 : (name === '15m' ? 1 : 2);
 };
 
+const BUSY_STATUSES = new Set(
+  ['entering', 'holding', 'exiting', 'settle_pending'],
+);
+const sideOpen = (x) => {
+  const p = x.position;
+  return BUSY_STATUSES.has(String(x.status || ''))
+    || (!!p && Number(p.shares) - Number(p.sold_shares) > 1e-9);
+};
+// One row per market: a side that holds / is working an order, otherwise
+// the cheaper waiting side — the entry threshold arms on the mid, so that
+// is the direction the strategy is currently watching.
+function sidesToShow(sides) {
+  const open = sides.filter(([, x]) => sideOpen(x));
+  if (open.length) return open;
+  const waiting = sides.filter(([, x]) => String(x.status || '') === 'waiting');
+  const pool = waiting.length ? waiting : sides;
+  const mid = (x) => (x.mid === null || x.mid === undefined
+    ? Infinity : Number(x.mid));
+  let best = pool[0];
+  for (const item of pool) {
+    if (mid(item[1]) < mid(best[1])) best = item;
+  }
+  return best ? [best] : [];
+}
+
 function renderAssets(s) {
   const rows = [];
   // Markets switched off in the config page are not listed, unless a
   // position is still open on them (that must stay visible).
   const assets = Object.entries(s.assets || {}).filter(
-    ([, a]) => a.enabled || Object.values(a.sides || {}).some((x) => x.position),
+    ([, a]) => a.enabled || Object.values(a.sides || {}).some(sideOpen),
   );
   // 5m markets first, then 15m; keep the server order within each group.
   assets.sort(([, a], [, b]) => intervalRank(a) - intervalRank(b));
@@ -207,7 +232,7 @@ function renderAssets(s) {
       </tr>`);
       continue;
     }
-    for (const [sideKey, side] of sides) {
+    for (const [sideKey, side] of sidesToShow(sides)) {
       const p = side.position;
       const pos = p
         ? `${fmt(p.shares - p.sold_shares, 2)} @ ${fmt(p.entry_price, 3)} ` +
@@ -292,7 +317,7 @@ async function refresh() {
       : s.mode === 'mixed'
         ? '混合模式：各市场按自己的纸盘/实盘设置执行'
         : '纸面模式：实时订单簿模拟成交，已扣官方 taker 费（BTC 5% / 其他 1%）')
-      + ` · 同向 UP ${ss.UP ?? 0}/${sideLimit} · DOWN ${ss.DOWN ?? 0}/${sideLimit}`
+      + ` · 实盘风控 同向 UP ${ss.UP ?? 0}/${sideLimit} · DOWN ${ss.DOWN ?? 0}/${sideLimit}`
       + ` · 单窗同向 ≤${winLimit}`
       + (exposure ? ` · 单窗 ${exposure}` : '')
       + ` · 全局 ${open.count ?? 0}/${s.max_open_positions ?? '--'}笔`
