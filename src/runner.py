@@ -27,6 +27,7 @@ from src.infra.timeutil import day_key, utc_hms, utc_iso
 from src.market.market_ws import MarketWS, MarketWSManager, PriceCache
 from src.market.service import MarketService
 from src.models import (
+    MIN_LIMIT_PRICE,
     MIN_ORDER_SHARES,
     MIN_ORDER_USD,
     SIZE_PRECISION,
@@ -543,7 +544,11 @@ class AssetRunner:
             else:
                 # Observed fill with a target floor: only fill at bids at
                 # or above the target; a gap to 0.42 fills at 0.42.
-                limit = max(tick, floor_tick(pos.tp_price, tick))
+                limit = max(
+                    float(MIN_LIMIT_PRICE),
+                    tick,
+                    floor_tick(pos.tp_price, tick),
+                )
         else:
             limit = self._force_exit_limit(quote, tick)
 
@@ -631,15 +636,17 @@ class AssetRunner:
         return tick
 
     def _force_exit_limit(self, quote: Quote | None, tick: float) -> float:
-        """Marketable SELL limit at or below the observed bid.
+        """Marketable SELL limit inside the CLOB price range.
 
-        ``max(tick, floor_tick(bid * (1 - slip)))`` used to push the limit
-        above the bid whenever the bid was below the assumed tick: with a
-        0.01 tick and a 0.001 bid, the limit became 0.01, nothing could
-        cross it, and the position settled at 0 instead of selling its
-        residual value.  Round down, but never above the bid.
+        Round the slippage-adjusted bid down to the tick and never place
+        the limit above the bid (a higher FAK cannot cross).  The CLOB
+        rejects any price below 0.01 even when the tick is 0.001, so the
+        limit is clamped into [0.01, max(bid, 0.01)]: near zero the order
+        may not fill, but it stays valid and can cross if the bid recovers
+        before the force-exit deadline.
         """
         tick_f = float(tick) if tick and tick > 0 else 0.01
+        low = max(float(MIN_LIMIT_PRICE), tick_f)
         slip = max(0.0, self.settings.execution.slippage_pct) / 100.0
         if quote is not None and quote.bid > 0:
             bid = float(quote.bid)
@@ -650,11 +657,10 @@ class AssetRunner:
                 limit = floor_tick(bid, tick_f)
             if limit <= 0:
                 # Book price is below the assumed tick (stale/unknown
-                # tick); paper can still take the bid, and live rejects
-                # the order the same way it rejected the old limit.
+                # tick); the exchange minimum keeps the order valid.
                 limit = bid
-            return min(limit, bid)
-        return tick_f
+            return min(max(limit, low), max(bid, low))
+        return low
 
     def _log_skip(
         self, reason: str, side: SideRuntime, now: float

@@ -9,7 +9,15 @@ import pytest
 from src.config import AssetConfig, load_settings
 from src.infra.timeutil import day_key
 from src.market.market_ws import PriceCache
-from src.models import DailyStats, Fill, MarketWindow, Position, Side, SideStatus
+from src.models import (
+    DailyStats,
+    Fill,
+    MarketWindow,
+    Position,
+    Quote,
+    Side,
+    SideStatus,
+)
 from src.runner import AssetRunner, MultiAssetRunner
 from src.runtime_config import RuntimeConfig
 from src.store import StateStore
@@ -602,6 +610,48 @@ async def test_no_entry_after_60s(tmp_path):
     assert broker.buys == []
 
 
+def test_force_exit_limit_respects_exchange_price_floor(tmp_path):
+    """A 0.001 tick does not allow sub-cent orders: clamp to 0.01.
+
+    Live XRP force-exit sent 0.001/0.009 limits, the CLOB rejected them
+    as "invalid price (min 0.01)", and the position settled worthless.
+    """
+    settings = _settings()
+    runner = AssetRunner(
+        settings.assets[0],
+        settings,
+        FakeBroker(),
+        PriceCache(),
+        FakeMarketService(_window()),
+        StateStore(tmp_path),
+        can_enter=lambda side: (True, "ok"),
+        on_trade=lambda r: None,
+        on_state_change=lambda: None,
+    )
+
+    def quote(bid: float) -> Quote:
+        return Quote(
+            token_id="down-token",
+            mid=bid,
+            bid=bid,
+            ask=bid + 0.001,
+            last=bid,
+            updated_at=T0,
+            source="test",
+        )
+
+    # 2% below 0.02 at a 0.001 tick stays inside the valid range.
+    assert runner._force_exit_limit(quote(0.02), 0.001) == pytest.approx(
+        0.019
+    )
+    # Below the exchange minimum: use 0.01 rather than an invalid 0.005.
+    assert runner._force_exit_limit(quote(0.005), 0.001) == pytest.approx(
+        0.01
+    )
+    # No quote: a valid minimum-price order instead of the 0.001 tick.
+    assert runner._force_exit_limit(None, 0.001) == pytest.approx(0.01)
+
+
 @pytest.mark.asyncio
 async def test_forced_exit_at_240s(tmp_path):
     settings = _settings()
@@ -634,6 +684,7 @@ class BidBookBroker(FakeBroker):
         super().__init__()
         self.bid = bid
         self.rejected: list[float] = []
+        self.invalid: list[float] = []
 
     async def sell(
         self,
@@ -646,6 +697,10 @@ class BidBookBroker(FakeBroker):
         position_id="",
     ):
         self.sells.append((token_id, shares, limit_price, tick_size))
+        if limit_price < 0.01 - 1e-12:
+            # The live CLOB rejects sub-cent prices even on a 0.001 tick.
+            self.invalid.append(limit_price)
+            return None
         if limit_price > self.bid + 1e-12:
             self.rejected.append(limit_price)
             return None
@@ -656,13 +711,13 @@ class BidBookBroker(FakeBroker):
 
 
 @pytest.mark.asyncio
-async def test_forced_exit_sells_residual_at_subcent_bid(tmp_path):
-    """A 0.001 bid must not be blocked by a 0.01 sell limit."""
+async def test_forced_exit_uses_subcent_tick_grid(tmp_path):
+    """A 0.001 tick still allows valid prices at or above 0.01."""
     settings = _settings()
     window = dataclasses.replace(_window(), tick_size=0.001)
     cache = PriceCache()
     cache.set_best_bid_ask("down-token", 0.23, 0.24, ts=T0 + 10)
-    broker = BidBookBroker(0.001)
+    broker = BidBookBroker(0.015)
     trades = []
     runner = AssetRunner(
         settings.assets[0],
@@ -676,14 +731,15 @@ async def test_forced_exit_sells_residual_at_subcent_bid(tmp_path):
         on_state_change=lambda: None,
     )
     await runner.tick(T0 + 10)  # entry ~0.24
-    cache.set_best_bid_ask("down-token", 0.001, 0.002, ts=T0 + 241)
+    cache.set_best_bid_ask("down-token", 0.015, 0.016, ts=T0 + 241)
     await runner.tick(T0 + 241)
 
+    assert broker.invalid == []
     assert broker.rejected == []
-    assert broker.sells and broker.sells[-1][2] == pytest.approx(0.001)
+    assert broker.sells and broker.sells[-1][2] == pytest.approx(0.014)
     assert len(trades) == 1
     assert trades[0].reason == "time_exit"
-    assert trades[0].exit_price == pytest.approx(0.001)
+    assert trades[0].exit_price == pytest.approx(0.015)
 
 
 @pytest.mark.asyncio
@@ -692,7 +748,7 @@ async def test_forced_exit_limit_never_above_bid(tmp_path):
     settings = _settings()
     cache = PriceCache()
     cache.set_best_bid_ask("down-token", 0.23, 0.24, ts=T0 + 10)
-    broker = BidBookBroker(0.001)
+    broker = BidBookBroker(0.015)
     trades = []
     runner = AssetRunner(
         settings.assets[0],
@@ -706,11 +762,12 @@ async def test_forced_exit_limit_never_above_bid(tmp_path):
         on_state_change=lambda: None,
     )
     await runner.tick(T0 + 10)
-    cache.set_best_bid_ask("down-token", 0.001, 0.002, ts=T0 + 241)
+    cache.set_best_bid_ask("down-token", 0.015, 0.016, ts=T0 + 241)
     await runner.tick(T0 + 241)
 
+    assert broker.invalid == []
     assert broker.rejected == []
-    assert broker.sells and broker.sells[-1][2] == pytest.approx(0.001)
+    assert broker.sells and broker.sells[-1][2] == pytest.approx(0.01)
     assert trades and trades[0].reason == "time_exit"
 
 
@@ -733,7 +790,7 @@ async def test_forced_exit_refreshes_midwindow_tick(tmp_path):
     settings = _settings()
     cache = PriceCache()
     cache.set_best_bid_ask("down-token", 0.23, 0.24, ts=T0 + 10)
-    broker = BidBookBroker(0.001)
+    broker = BidBookBroker(0.015)
     trades = []
     service = DynamicTickService(_window(), 0.001)
     runner = AssetRunner(
@@ -753,12 +810,13 @@ async def test_forced_exit_refreshes_midwindow_tick(tmp_path):
 
     # By the forced exit the exchange grid is 0.001, not the 0.01 cached
     # when the window was discovered.
-    cache.set_best_bid_ask("down-token", 0.001, 0.002, ts=T0 + 241)
+    cache.set_best_bid_ask("down-token", 0.015, 0.016, ts=T0 + 241)
     await runner.tick(T0 + 241)
 
     assert service.tick_calls >= 1
     assert pos.tick_size == pytest.approx(0.001)
-    assert broker.sells[-1][2] == pytest.approx(0.001)
+    assert broker.invalid == []
+    assert broker.sells[-1][2] == pytest.approx(0.014)
     assert broker.sells[-1][3] == pytest.approx(0.001)
     assert trades and trades[0].reason == "time_exit"
 

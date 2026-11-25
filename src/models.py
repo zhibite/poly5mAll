@@ -17,6 +17,10 @@ SIZE_PRECISION = 0.01
 # notional.  Both floors are listed here; callers must use OR, not AND.
 MIN_ORDER_SHARES = 5.0
 MIN_ORDER_USD = 1.0
+# The CLOB price range is [0.01, 0.99] regardless of tick size: a 0.001
+# tick only refines the grid, it does not allow sub-cent limit prices.
+# Orders below 0.01 are rejected with "invalid price".
+MIN_LIMIT_PRICE = 0.01
 
 
 class Side(str, Enum):
