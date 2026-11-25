@@ -170,6 +170,10 @@ class Position:
     # Market timeframe ("5m" / "15m").  State files written before 15m
     # support have no field and are treated as 5m.
     interval: str = "5m"
+    # Execution venue this position was opened on ("paper" / "live").
+    # Empty in state files written before per-market modes; the runner
+    # fills it from the runtime config on restore.
+    mode: str = ""
     up_token: str = ""
     down_token: str = ""
     # Exchange V3 position id used to sign live SELLs on v2 markets.
@@ -231,6 +235,7 @@ class Position:
             "slug": self.slug,
             "token_id": self.token_id,
             "interval": self.interval,
+            "mode": self.mode,
             "entry_ts": round(self.entry_ts, 3),
             "entry_price": round(self.entry_price, 8),
             "shares": round(self.shares, 8),
@@ -284,6 +289,7 @@ class Position:
             sl_price=float(raw.get("sl_price", 0.0) or 0.0),
             stake_usd=float(raw.get("stake_usd", raw.get("cost_usd", 0.0))),
             interval=interval,
+            mode=str(raw.get("mode") or "").strip().lower(),
             up_token=str(raw.get("up_token", "")),
             down_token=str(raw.get("down_token", "")),
             exchange_position_id=str(raw.get("exchange_position_id", "") or ""),

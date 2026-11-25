@@ -82,6 +82,7 @@ class FakeBroker:
         self.sells = []
         self.buy_position_ids = []
         self.sell_position_ids = []
+        self.sell_modes = []
 
     async def buy(
         self,
@@ -92,6 +93,7 @@ class FakeBroker:
         fee_rate=None,
         *,
         position_id="",
+        mode=None,
     ):
         self.buys.append((token_id, usd_amount, limit_price))
         self.buy_position_ids.append(position_id)
@@ -109,9 +111,11 @@ class FakeBroker:
         fee_rate=None,
         *,
         position_id="",
+        mode=None,
     ):
         self.sells.append((token_id, shares, limit_price))
         self.sell_position_ids.append(position_id)
+        self.sell_modes.append(mode)
         price = 0.30 if limit_price < 0.30 else limit_price
         return Fill(
             token_id, "SELL", shares, shares * price, price, 0.05, T0 + 70
@@ -166,6 +170,7 @@ async def test_entry_then_take_profit(tmp_path):
     assert len(broker.buys) == 1
     pos = runner.sides[0].position
     assert pos is not None
+    assert pos.mode == "paper"
     assert pos.entry_quote_mid == pytest.approx(0.235)
     assert pos.entry_quote_bid == pytest.approx(0.23)
     assert pos.entry_quote_ask == pytest.approx(0.24)
@@ -176,6 +181,7 @@ async def test_entry_then_take_profit(tmp_path):
     cache.set_best_bid_ask("down-token", 0.30, 0.31, ts=T0 + 70)
     await runner.tick(T0 + 70)
     assert len(broker.sells) == 1
+    assert broker.sell_modes == ["paper"]
     assert len(trades) == 1
     assert trades[0].reason == "tp"
     assert trades[0].pnl_net > 0
@@ -330,6 +336,7 @@ class RaisingBroker(FakeBroker):
         fee_rate=None,
         *,
         position_id="",
+        mode=None,
     ):
         raise RuntimeError("network down")
 
@@ -367,6 +374,7 @@ class GapBroker(FakeBroker):
         fee_rate=None,
         *,
         position_id="",
+        mode=None,
     ):
         self.sells.append((token_id, shares, limit_price))
         price = 0.42
@@ -816,6 +824,22 @@ async def test_15m_market_does_not_enter_after_180s(tmp_path):
     assert broker.buys == []
 
 
+@pytest.mark.asyncio
+async def test_market_mode_switch_blocked_by_open_position(tmp_path):
+    settings = _settings()
+    runner = _multi_runner(settings, tmp_path)
+    runner.cache.set_best_bid_ask("down-token", 0.23, 0.24, ts=T0 + 10)
+    await runner.markets["BTC-5M"].tick(T0 + 10)
+    assert len(runner.markets["BTC-5M"].positions()) == 1
+    assert runner.mode_switch_block_reason("BTC-5M") == "open positions"
+    with pytest.raises(ValueError):
+        runner.set_mode("paper", market="BTC-5M")
+    # The market mode stays paper and the position carries its own venue.
+    assert runner.mode_for("BTC-5M") == "paper"
+    pos = runner.markets["BTC-5M"].sides[0].position
+    assert pos is not None and pos.mode == "paper"
+
+
 def test_5m_and_15m_positions_use_separate_window_keys(tmp_path):
     settings = _settings()
     runner = _multi_runner(settings, tmp_path)
@@ -952,6 +976,7 @@ class BidBookBroker(FakeBroker):
         fee_rate=None,
         *,
         position_id="",
+        mode=None,
     ):
         self.sells.append((token_id, shares, limit_price, tick_size))
         if limit_price < 0.01 - 1e-12:
@@ -1095,6 +1120,7 @@ class PartialSellBroker(FakeBroker):
         fee_rate=None,
         *,
         position_id="",
+        mode=None,
     ):
         self.sells.append((token_id, shares, limit_price))
         sold = shares if self._partial_done else shares / 3.0

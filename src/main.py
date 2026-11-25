@@ -227,14 +227,16 @@ async def _build_broker(settings: Settings, pm, cache: PriceCache, runtime):
             )
         except Exception as exc:  # noqa: BLE001
             log.warning("live broker unavailable: {}", exc)
-    if runtime.mode == "live" and live is None:
+    if live is None and runtime.has_live_mode():
         log.warning(
-            "runtime mode=live but live broker is unavailable; "
-            "falling back to paper"
+            "runtime has live market(s) but the live broker is unavailable; "
+            "falling back to paper for all markets"
         )
         runtime.set_mode("paper")
     mode = runtime.mode if (runtime.mode == "paper" or live is not None) else "paper"
-    return ModeBroker(paper, live, mode=mode)
+    return ModeBroker(
+        paper, live, mode=mode, mode_for=runtime.mode_for
+    )
 
 
 async def _run(settings: Settings, duration_s: float = 0.0) -> int:
@@ -261,7 +263,12 @@ async def _run(settings: Settings, duration_s: float = 0.0) -> int:
         settings.data_dir / "runtime_config.json", settings
     )
     broker = await _build_broker(settings, pm, cache, runtime)
-    if broker.is_live and broker.live is not None:
+    live_markets = [
+        market
+        for market in runtime.order
+        if runtime.mode_for(market) == "live"
+    ]
+    if live_markets and broker.live is not None:
         try:
             balance = await broker.live.collateral()
         except Exception:  # noqa: BLE001
@@ -321,8 +328,10 @@ async def _run(settings: Settings, duration_s: float = 0.0) -> int:
         if web is not None:
             await web.start()
         log.warning(
-            "mode={} live_available={} markets={} web={} — press Ctrl+C to stop",
+            "mode={} live_markets={} live_available={} markets={} web={} — "
+            "press Ctrl+C to stop",
             broker.mode,
+            ",".join(live_markets) or "-",
             broker.live_available,
             ",".join(runner.markets),
             web.url if web is not None else "off",

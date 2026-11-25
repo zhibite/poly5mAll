@@ -181,6 +181,8 @@ class RuntimeConfig:
         self.mode = self._default_mode
         if self.mode == "live" and not self.live_allowed:
             self.mode = "paper"
+        # Per-market paper/live overrides.  Missing markets use ``mode``.
+        self.market_modes: dict[str, str] = {}
         self._default_max_daily_loss_usd = (
             max(0.0, float(max_daily_loss_usd))
             if max_daily_loss_usd is not None else 0.0
@@ -268,6 +270,45 @@ class RuntimeConfig:
             if cfg.asset.upper() == key
         ]
 
+    def mode_for(self, market: str) -> str:
+        """Effective paper/live mode for one market."""
+        keys = self._keys_for(market)
+        if keys:
+            mode = self.market_modes.get(keys[0], self.mode)
+        else:
+            mode = self.mode
+        if mode == "live" and not self.live_allowed:
+            return "paper"
+        return mode if mode in ("paper", "live") else "paper"
+
+    def has_live_mode(self) -> bool:
+        return self.mode == "live" or any(
+            mode == "live" for mode in self.market_modes.values()
+        )
+
+    def set_market_mode(self, market: str, mode: str) -> str:
+        """Persist one market's paper/live choice (coin alias -> both)."""
+        mode = str(mode).strip().lower()
+        if mode not in ("paper", "live"):
+            raise ValueError("mode must be 'paper' or 'live'")
+        if mode == "live" and not self.live_allowed:
+            raise ValueError("live mode is not enabled in .env")
+        keys = self._keys_for(market)
+        if not keys:
+            raise ValueError(f"unknown market: {market}")
+        for key in keys:
+            self.market_modes[key] = mode
+        self.version += 1
+        self.updated_at = time.time()
+        self._save()
+        log.info(
+            "runtime_config.market_mode market={} mode={} version={}",
+            ",".join(keys),
+            mode,
+            self.version,
+        )
+        return mode
+
     def asset(self, name: str) -> AssetConfig:
         keys = self._keys_for(name)
         if not keys:
@@ -302,6 +343,7 @@ class RuntimeConfig:
                     "window_sec": a.window_sec,
                     "entry_window_end_s": a.entry_window_end_s,
                     "enabled": a.enabled,
+                    "mode": self.mode_for(a.market),
                     "sides": [s.value for s in a.sides],
                     "entry_thresh": a.entry_thresh,
                     "tp_pct": a.tp_pct,
@@ -362,6 +404,9 @@ class RuntimeConfig:
         if mode == "live" and not self.live_allowed:
             raise ValueError("live mode is not enabled in .env")
         self.mode = mode
+        # A global switch applies to every market, so drop per-market
+        # overrides.
+        self.market_modes.clear()
         self.version += 1
         self.updated_at = time.time()
         self._save()
@@ -375,9 +420,9 @@ class RuntimeConfig:
         self.version += 1
         self.updated_at = time.time()
         if self.path is not None:
-            if self.mode != self._default_mode:
-                # Keep a non-default paper/live selection across a reset
-                # of the asset overrides and risk caps.
+            if self.mode != self._default_mode or self.market_modes:
+                # Keep paper/live choices (including per-market overrides)
+                # across a reset of the strategy/risk parameters.
                 self._save()
             else:
                 try:
@@ -406,6 +451,16 @@ class RuntimeConfig:
             self.mode = "paper"
         elif mode == "live" and self.live_allowed:
             self.mode = "live"
+        modes_raw = raw.get("market_modes") or {}
+        if isinstance(modes_raw, dict):
+            for name, value in modes_raw.items():
+                mode_s = str(value).strip().lower()
+                if mode_s not in ("paper", "live"):
+                    continue
+                if mode_s == "live" and not self.live_allowed:
+                    continue
+                for key in self._keys_for(name):
+                    self.market_modes[key] = mode_s
         for field, spec in _RISK_UPDATE_SPECS.items():
             if raw.get(field) is None:
                 continue
@@ -457,6 +512,7 @@ class RuntimeConfig:
             "version": max(1, self.version),
             "updated_at": self.updated_at or time.time(),
             "mode": self.mode,
+            "market_modes": dict(sorted(self.market_modes.items())),
             **{field: getattr(self, field) for field in _RISK_FIELDS},
             "assets": {
                 row["market"]: {

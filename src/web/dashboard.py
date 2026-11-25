@@ -166,7 +166,10 @@ function renderAssets(s) {
       : (perf && Number(perf.stake_mult) < 1
         ? ` <span class="pill orange" title="滚动表现降权">×${perf.stake_mult}</span>`
         : '');
-    const label = `${escapeHtml(a.asset || market)} <span class="pill blue">${escapeHtml(a.interval || '')}</span>`;
+    const modePill = a.mode === 'live'
+      ? '<span class="pill red">实盘</span>'
+      : '<span class="pill blue">纸盘</span>';
+    const label = `${escapeHtml(a.asset || market)} <span class="pill blue">${escapeHtml(a.interval || '')}</span> ${modePill}`;
     const w = a.window || {};
     const sides = Object.entries(a.sides || {});
     if (sides.length === 0) {
@@ -183,7 +186,9 @@ function renderAssets(s) {
     for (const [sideKey, side] of sides) {
       const p = side.position;
       const pos = p
-        ? `${fmt(p.shares - p.sold_shares, 2)} @ ${fmt(p.entry_price, 3)}`
+        ? `${fmt(p.shares - p.sold_shares, 2)} @ ${fmt(p.entry_price, 3)} ` +
+          `<span class="pill ${p.mode === 'live' ? 'red' : 'blue'}">` +
+          `${p.mode === 'live' ? '实' : '纸'}</span>`
         : '--';
       rows.push(`<tr>
         <td><b>${label}</b>${perfTag}</td>
@@ -242,8 +247,11 @@ async function refresh() {
     STATE = s;
     if (s.ts) SERVER_OFFSET_MS = Number(s.ts) * 1000 - Date.now();
     tickWindowClock();
-    $('mode').textContent = s.mode === 'live' ? '实盘' : '纸面';
-    $('mode').className = s.mode === 'live' ? 'red' : 'green';
+    $('mode').textContent = s.mode === 'live'
+      ? '实盘' : (s.mode === 'mixed' ? '混合' : '纸面');
+    $('mode').className = 'stat-value ' + (
+      s.mode === 'live' ? 'red' : (s.mode === 'mixed' ? 'orange' : 'green')
+    );
     $('cfgver').textContent = 'v' + (s.config_version ?? 0);
     $('uptime').textContent = '运行 ' + Math.round(s.uptime_s || 0) + ' 秒';
     $('pause').textContent = s.paused ? '恢复新开仓' : '暂停新开仓';
@@ -257,7 +265,9 @@ async function refresh() {
     const open = s.open_exposure || {};
     $('mode-note').textContent = (s.mode === 'live'
       ? '实盘模式：真实 CLOB FAK 订单'
-      : '纸面模式：实时订单簿模拟成交，已扣官方 taker 费（BTC 5% / 其他 1%）')
+      : s.mode === 'mixed'
+        ? '混合模式：各市场按自己的纸盘/实盘设置执行'
+        : '纸面模式：实时订单簿模拟成交，已扣官方 taker 费（BTC 5% / 其他 1%）')
       + ` · 同向 UP ${ss.UP ?? 0}/${sideLimit} · DOWN ${ss.DOWN ?? 0}/${sideLimit}`
       + ` · 单窗同向 ≤${winLimit}`
       + (exposure ? ` · 单窗 ${exposure}` : '')
@@ -266,7 +276,9 @@ async function refresh() {
       + ` · 回撤 ${money(s.intraday_drawdown_usd, 2)}/${s.max_intraday_drawdown_usd ?? '--'}U`
       + ((s.drawdown_pause_remaining_s || 0) > 0
         ? `（暂停 ${Math.ceil(s.drawdown_pause_remaining_s / 60)}m）` : '');
-    $('mode-note').className = 'control-meta ' + (s.mode === 'live' ? 'red' : 'muted');
+    $('mode-note').className = 'control-meta ' + (
+      s.mode === 'live' ? 'red' : (s.mode === 'mixed' ? 'orange' : 'muted')
+    );
     renderAssets(s);
 
     const [stats, trades] = await Promise.all([

@@ -22,6 +22,7 @@ class FakeRunner:
         self.paused = False
         self.pause_reason = ""
         self._positions: list = []
+        self.market_modes: dict[str, str] = {}
 
     def status_payload(self):
         return {
@@ -43,10 +44,13 @@ class FakeRunner:
         self.paused = bool(paused)
         self.pause_reason = (reason or "paused") if self.paused else ""
 
-    def set_mode(self, mode: str) -> str:
+    def set_mode(self, mode: str, market: str | None = None) -> str:
         if mode not in ("paper", "live"):
             raise ValueError("mode must be paper or live")
-        self.mode = mode
+        if market:
+            self.market_modes[market.upper()] = mode
+        else:
+            self.mode = mode
         return mode
 
     async def flatten_open_positions(self) -> int:
@@ -132,6 +136,8 @@ def test_config_defaults_and_update(client):
     assert by_name["ETH-5M"]["enabled"] is True
     assert by_name["ETH-15M"]["enabled"] is False
     assert by_name["HYPE-15M"]["enabled"] is False
+    assert by_name["ETH-5M"]["mode"] == "paper"
+    assert by_name["BTC-15M"]["mode"] == "paper"
     assert by_name["BTC-5M"]["stop_loss_pct"] == pytest.approx(0.0)
     assert [i["name"] for i in data["intervals"]] == ["5m", "15m"]
     assert data["intervals"][1]["window_sec"] == 900
@@ -239,6 +245,19 @@ def test_mode_switch_requires_live_confirmation(client):
     r = client.post("/api/mode", json={"mode": "paper"})
     assert r.status_code == 200, r.text
     assert r.json()["mode"] == "paper"
+
+    # Per-market switch: live still needs the explicit confirmation.
+    r = client.post(
+        "/api/mode", json={"market": "ETH-15M", "mode": "live"}
+    )
+    assert r.status_code == 400
+    r = client.post(
+        "/api/mode",
+        json={"market": "ETH-15M", "mode": "live", "confirm": "LIVE"},
+    )
+    assert r.status_code == 200, r.text
+    assert r.json()["market"] == "ETH-15M"
+    assert client.runner.market_modes["ETH-15M"] == "live"  # type: ignore[attr-defined]
 
 
 def test_trades_stats_and_filters(client):

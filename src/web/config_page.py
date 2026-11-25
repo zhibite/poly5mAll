@@ -47,18 +47,11 @@ _BODY = r"""
 
 <div id="auth-alert"></div>
 
-<div class="section">
-  <h2>交易模式</h2>
-  <div class="controls" style="margin:0">
-    <span>当前：<b id="trade-mode">--</b></span>
-    <span class="control-meta" id="mode-note"></span>
-    <button id="mode-switch" class="btn btn-danger">切换到实盘</button>
-  </div>
-  <div class="alert info" style="margin:12px 0 0">
-    切换实盘会下真实订单：要求 .env 允许实盘（<span class="mono">PAPER_TRADING=false</span>
-    且 <span class="mono">LIVE_ENABLED=true</span>）、凭证可用，并且当前
-    <b>无持仓、无在途入场</b>。切换会持久化到运行时配置；纸盘模式不会下真实订单。
-  </div>
+<div class="alert info">
+  <b>交易模式：</b>每个市场可在下表单独选择<b>纸盘</b>或<b>实盘</b>。切换实盘会下真实
+  订单：要求 .env 允许实盘（<span class="mono">PAPER_TRADING=false</span> 且
+  <span class="mono">LIVE_ENABLED=true</span>）、凭证可用，并且<b>该市场无持仓、
+  无在途入场</b>。已有仓位保持开仓时的模式；切换会持久化到运行时配置。
 </div>
 
 <div class="section">
@@ -139,24 +132,18 @@ _BODY = r"""
 </div>
 
 <div class="section">
-  <h2>市场时间轴 <span class="pill blue" id="tp-mode-pill">observed</span></h2>
-  <div class="timing-grid" id="timing-grid">
-    <div class="no-data">加载中...</div>
-  </div>
-</div>
-
-<div class="section">
-  <h2>市场参数（默认 6 个 5m 启用；15m / BTC 关闭）</h2>
+  <h2>市场参数（7 币 × 5m/15m，共 14 个）</h2>
   <div class="table-wrap">
     <table>
       <thead><tr>
-        <th>启用</th><th>币种 / 周期</th><th>方向</th>
+        <th>启用</th><th>币种 / 周期</th><th>模式</th><th>方向</th>
         <th class="num">费率</th>
-        <th class="num">entry ≤</th><th class="num">TP %</th>
+        <th class="num">入场时间</th>
+        <th class="num">入场价 ≤</th><th class="num">止盈 %</th>
         <th class="num">止损 %</th>
         <th class="num">每笔 U</th>
       </tr></thead>
-      <tbody id="rows"><tr><td colspan="8" class="no-data">加载中...</td></tr></tbody>
+      <tbody id="rows"><tr><td colspan="10" class="no-data">加载中...</td></tr></tbody>
     </table>
   </div>
 </div>
@@ -178,76 +165,14 @@ function sideValue(a) {
   return sides[0] || 'DOWN';
 }
 
-function renderMode(cfg) {
-  const live = cfg.mode === 'live';
-  $('trade-mode').textContent = live ? '实盘' : '纸盘';
-  $('trade-mode').className = live ? 'red' : 'green';
-  const btn = $('mode-switch');
-  const allowed = !!cfg.live_allowed;
-  const avail = !!cfg.live_available;
-  if (live) {
-    btn.textContent = '切换回纸盘';
-    btn.className = 'btn btn-ghost';
-    btn.disabled = false;
-    $('mode-note').textContent = '真实 CLOB 订单';
-  } else if (!allowed) {
-    btn.textContent = '实盘不可用（.env 未允许）';
-    btn.className = 'btn btn-ghost';
-    btn.disabled = true;
-    $('mode-note').textContent = '需要 PAPER_TRADING=false 且 LIVE_ENABLED=true';
-  } else if (!avail) {
-    btn.textContent = '实盘不可用（凭证未配置）';
-    btn.className = 'btn btn-ghost';
-    btn.disabled = true;
-    $('mode-note').textContent = 'CLOB 凭证缺失或初始化失败';
-  } else {
-    btn.textContent = '切换到实盘';
-    btn.className = 'btn btn-danger';
-    btn.disabled = false;
-    $('mode-note').textContent = '切换前必须无持仓、无在途入场';
-  }
-}
-
-function renderTiming(cfg) {
-  const intervals = cfg.intervals || [];
-  const mode = cfg.tp_execution_mode || 'observed';
-  $('tp-mode-pill').textContent = mode;
-
-  const cards = [];
-  for (const t of intervals) {
-    const total = Number(t.window_sec || 300);
-    const entry = Number(t.entry_window_end_s || 60);
-    const label = t.name;
-    cards.push(`
-      <div class="timing-card">
-        <div class="t-label">${escapeHtml(label)} 入场观察</div>
-        <div class="t-time">0–${entry}s</div>
-        <div class="t-desc">${escapeHtml(label)} 市场开始后观察；该方向价格首次
-          ≤ entry 时买入。每方向每窗口最多一笔。</div>
-      </div>
-      <div class="timing-card tp">
-        <div class="t-label">${escapeHtml(label)} 止盈 / 止损</div>
-        <div class="t-time">入场成交后–${total}s</div>
-        <div class="t-desc">从实际成交时刻开始监控：价格 ≥ 成交价 × (1 + TP%)
-          止盈；≤ 成交价 × (1 − 止损%) 止损（0 = 关闭）。</div>
-      </div>
-      <div class="timing-card settle">
-        <div class="t-label">${escapeHtml(label)} 结算</div>
-        <div class="t-time">${total}s 窗口结束</div>
-        <div class="t-desc">窗口结束时仍未平仓的剩余份额，
-          按 Gamma 0/1 结算价记账。</div>
-      </div>`);
-  }
-  $('timing-grid').innerHTML = cards.join('')
-    || '<div class="no-data">没有配置市场周期</div>';
-}
-
 function render() {
   const cfg = DATA;
   $('version').textContent = 'v' + (cfg.version ?? 0);
   $('runtime-path').textContent = cfg.runtime_path || '(not persisted)';
-  $('mode').textContent = cfg.mode === 'live' ? '实盘' : '纸面';
-  $('mode').className = 'stat-value ' + (cfg.mode === 'live' ? 'red' : 'green');
+  const liveCount = (cfg.assets || []).filter((a) => a.mode === 'live').length;
+  const paperCount = (cfg.assets || []).filter((a) => a.mode !== 'live').length;
+  $('mode').textContent = `实盘 ${liveCount} · 纸盘 ${paperCount}`;
+  $('mode').className = 'stat-value ' + (liveCount ? 'red' : 'green');
   $('fee-rate').textContent = fmt(Number(cfg.taker_fee_rate) * 100, 1) + '%';
   $('global-stake').textContent = fmt(cfg.stake_usd, 0) + ' U';
   $('same-limit').textContent = String(cfg.max_same_side_positions ?? '--')
@@ -271,8 +196,6 @@ function render() {
   $('perf-min-pnl').value = cfg.asset_perf_min_pnl_usd ?? -3;
   $('perf-stake-mult').value = cfg.asset_perf_stake_mult ?? 0.5;
   $('perf-disable-pnl').value = cfg.asset_perf_disable_pnl_usd ?? -6;
-  renderMode(cfg);
-  renderTiming(cfg);
 
   if (cfg.web && !cfg.web.auth) {
     $('auth-alert').innerHTML =
@@ -287,12 +210,28 @@ function render() {
     const stake = a.stake_usd === null || a.stake_usd === undefined
       ? '' : a.stake_usd;
     const on = !!a.enabled;
+    const entryEnd = Number(
+      a.entry_window_end_s ?? (a.interval === '15m' ? 180 : 60)
+    );
+    const windowSec = Number(
+      a.window_sec ?? (a.interval === '15m' ? 900 : 300)
+    );
+    const mode = a.mode === 'live' ? 'live' : 'paper';
+    const canLive = !!(cfg.live_allowed && cfg.live_available);
     return `<tr data-market="${escapeHtml(a.market)}"
                 data-asset="${escapeHtml(a.asset)}">
       <td><input type="checkbox" data-k="enabled" ${on ? 'checked' : ''}></td>
       <td><b>${escapeHtml(a.asset)}</b>
         <span class="pill blue">${escapeHtml(a.interval)}</span><br>
         <span class="pill ${on ? 'green' : ''}" data-role="state">${on ? '启用' : '关闭'}</span>
+      </td>
+      <td>
+        <select data-k="mode" data-prev="${mode}" style="width:82px"
+            title="${canLive ? '' : '实盘不可用：需要 .env 允许且凭证可用'}">
+          <option value="paper" ${mode === 'paper' ? 'selected' : ''}>纸盘</option>
+          <option value="live" ${mode === 'live' ? 'selected' : ''}
+              ${canLive ? '' : 'disabled'}>实盘</option>
+        </select>
       </td>
       <td>
         <select data-k="sides" style="width:118px">
@@ -302,6 +241,7 @@ function render() {
         </select>
       </td>
       <td class="num mono">${(Number(a.taker_fee_rate ?? cfg.taker_fee_rate) * 100).toFixed(1)}%</td>
+      <td class="num mono" title="窗口总长 ${windowSec}s">0–${entryEnd}s</td>
       <td class="num"><input type="number" data-k="entry_thresh" step="0.01"
           min="0.01" max="0.99" style="width:90px" value="${a.entry_thresh}"></td>
       <td class="num"><input type="number" data-k="tp_pct" step="0.5"
@@ -314,7 +254,7 @@ function render() {
           min="1" style="width:90px" value="${stake}"
           placeholder="${cfg.stake_usd}"></td>
     </tr>`;
-  }).join('') || '<tr><td colspan="8" class="no-data">没有市场</td></tr>';
+  }).join('') || '<tr><td colspan="10" class="no-data">没有市场</td></tr>';
 
   for (const cb of document.querySelectorAll('#rows input[data-k="enabled"]')) {
     cb.addEventListener('change', () => {
@@ -322,6 +262,40 @@ function render() {
       if (!state) return;
       state.textContent = cb.checked ? '启用' : '关闭';
       state.className = 'pill ' + (cb.checked ? 'green' : '');
+    });
+  }
+  for (const sel of document.querySelectorAll('#rows select[data-k="mode"]')) {
+    sel.addEventListener('change', async () => {
+      const tr = sel.closest('tr');
+      const market = tr.getAttribute('data-market');
+      const prev = sel.dataset.prev || 'paper';
+      const target = sel.value;
+      if (target === prev) return;
+      if (target === 'live') {
+        const c = prompt(
+          `将 ${market} 切换到实盘会下真实订单。\n` +
+          `要求该市场无持仓、无在途入场。输入 LIVE 确认：`
+        );
+        if (c !== 'LIVE') { sel.value = prev; return; }
+      }
+      sel.disabled = true;
+      try {
+        await postJSON('/api/mode', {
+          market,
+          mode: target,
+          confirm: target === 'live' ? 'LIVE' : '',
+        });
+        sel.dataset.prev = target;
+        $('msg').textContent = `✅ ${market} 已切换到` +
+          (target === 'live' ? '实盘' : '纸盘');
+        $('msg').className = 'msg green';
+      } catch (e) {
+        sel.value = prev;
+        $('msg').textContent = '⚠️ ' + e.message;
+        $('msg').className = 'msg red';
+      } finally {
+        sel.disabled = false;
+      }
     });
   }
 }
@@ -425,28 +399,6 @@ function collect() {
     asset_perf_disable_pnl_usd: perfDisablePnl,
   };
 }
-
-$('mode-switch').onclick = async () => {
-  const cur = DATA && DATA.mode;
-  let body;
-  if (cur === 'live') {
-    if (!confirm('切换回纸盘模式？要求当前无持仓、无在途入场。')) return;
-    body = {mode: 'paper', confirm: 'PAPER'};
-  } else {
-    const c = prompt('切换到实盘会下真实订单。输入 LIVE 确认：');
-    if (c !== 'LIVE') return;
-    body = {mode: 'live', confirm: 'LIVE'};
-  }
-  try {
-    await postJSON('/api/mode', body);
-    await load();
-    $('msg').textContent = '✅ 已切换到' + (body.mode === 'live' ? '实盘' : '纸盘');
-    $('msg').className = 'msg green';
-  } catch (e) {
-    $('msg').textContent = '⚠️ ' + e.message;
-    $('msg').className = 'msg red';
-  }
-};
 
 async function load() {
   try {

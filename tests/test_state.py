@@ -64,12 +64,14 @@ def test_15m_position_roundtrip(tmp_path):
     pos = _position()
     pos.interval = "15m"
     pos.window_end = pos.window_start + 900
+    pos.mode = "live"
     store = StateStore(tmp_path)
     store.save([pos], {})
     loaded, _ = store.load()
     assert loaded[0].interval == "15m"
     assert loaded[0].window_sec == 900
     assert loaded[0].market == "BTC-15M"
+    assert loaded[0].mode == "live"
 
 
 def test_daily_stats_peak_pnl_roundtrip_and_legacy(tmp_path):

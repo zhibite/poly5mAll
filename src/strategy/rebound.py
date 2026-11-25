@@ -177,7 +177,11 @@ class SideRuntime:
 
     # ── bookings ───────────────────────────────────────────────────────
     def on_entry_fill(
-        self, fill: Fill, now: float, execution: ExecutionConfig
+        self,
+        fill: Fill,
+        now: float,
+        execution: ExecutionConfig,
+        mode: str = "",
     ) -> Position:
         if fill.price <= 0 or fill.price >= 1 or fill.shares <= 0:
             raise ValueError(f"invalid entry fill: {fill}")
@@ -196,6 +200,7 @@ class SideRuntime:
             exchange_position_id=self.window.position(self.plan.side),
             entry_ts=now,
             interval=interval,
+            mode=str(mode or ""),
             entry_price=float(fill.price),
             shares=float(fill.shares),
             cost_usd=float(fill.usdc),

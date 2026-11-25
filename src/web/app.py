@@ -51,6 +51,9 @@ class PauseBody(BaseModel):
 class ModeBody(BaseModel):
     mode: str = ""
     confirm: str = ""
+    # Empty = switch every market (legacy global switch); otherwise one
+    # market key such as "ETH-15M".
+    market: str = ""
 
 
 class FlattenBody(BaseModel):
@@ -414,11 +417,12 @@ def create_app(
                 status_code=400,
                 detail='set confirm="LIVE" to switch to live trading',
             )
+        market = str(body.market or "").strip().upper()
         try:
-            mode = runner.set_mode(target)
+            mode = runner.set_mode(target, market=market or None)
         except (ValueError, RuntimeError) as exc:
             raise HTTPException(status_code=400, detail=str(exc)) from exc
-        return {"ok": True, "mode": mode}
+        return {"ok": True, "mode": mode, "market": market}
 
     @app.post("/api/pause")
     async def api_pause(

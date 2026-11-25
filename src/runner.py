@@ -247,6 +247,8 @@ class AssetRunner:
             if pos.interval != self.interval:
                 continue
             pos.interval = self.interval
+            if not pos.mode:
+                pos.mode = self.mode
             side_rt = next(
                 (s for s in self.sides if s.plan.side is pos.side), None
             )
@@ -461,6 +463,9 @@ class AssetRunner:
         try:
             side.status = SideStatus.ENTERING
             side.last_entry_attempt = now
+            # Capture the venue before the order; a mode change is blocked
+            # while this side is ENTERING, so the fill routes the same way.
+            entry_mode = self.mode
             limit = floor_tick(side.plan.entry_thresh, self.window.tick_size)
             if limit <= 0:
                 side.on_entry_missed(now)
@@ -486,7 +491,7 @@ class AssetRunner:
 
             try:
                 position = side.on_entry_fill(
-                    fill, now, self.settings.execution
+                    fill, now, self.settings.execution, mode=entry_mode
                 )
             except Exception as exc:  # noqa: BLE001
                 side.on_entry_missed(now)
@@ -544,9 +549,10 @@ class AssetRunner:
         if pos is None or pos.remaining_shares <= 0:
             return
         remaining = pos.remaining_shares
+        exit_mode = pos.mode or self.mode
         if remaining < SIZE_PRECISION - 1e-9:
             # Below one size lot: worth <1 cent, write it off and close.
-            record = side.on_dust(now, reason, self.mode)
+            record = side.on_dust(now, reason, exit_mode)
             log.warning(
                 "[{}] {} {} dust {:.6f} written off (reason={})",
                 self.market,
@@ -642,6 +648,7 @@ class AssetRunner:
                 tick,
                 fee_rate=self.current_cfg().taker_fee_rate,
                 position_id=pos.exchange_position_id,
+                mode=exit_mode,
             )
         except Exception as exc:  # noqa: BLE001
             side.on_exit_missed(now)
@@ -652,7 +659,7 @@ class AssetRunner:
             return
 
         record = side.on_exit_fill(
-            fill, now, reason, self.settings.execution, self.mode
+            fill, now, reason, self.settings.execution, exit_mode
         )
         log.info(
             "[{}] EXIT {} {} reason={} mode={} tp_target={:.4f} "
@@ -759,9 +766,10 @@ class AssetRunner:
             if side.position is None or side.position.is_flat:
                 continue
             pos = side.position
+            pos_mode = pos.mode or self.mode
             remaining = pos.remaining_shares
             if remaining < SIZE_PRECISION - 1e-9:
-                record = side.on_dust(now, "shutdown", self.mode)
+                record = side.on_dust(now, "shutdown", pos_mode)
                 log.warning(
                     "[{}] {} dust {:.6f} written off (shutdown)",
                     self.market,
@@ -801,6 +809,7 @@ class AssetRunner:
                     tick,
                     fee_rate=self.current_cfg().taker_fee_rate,
                     position_id=pos.exchange_position_id,
+                    mode=pos_mode,
                 )
             except Exception as exc:  # noqa: BLE001
                 log.warning("[{}] flatten sell error: {}", self.market, exc)
@@ -815,7 +824,7 @@ class AssetRunner:
                 now,
                 "shutdown",
                 self.settings.execution,
-                self.mode,
+                pos_mode,
             )
             log.info(
                 "[{}] FLATTEN {} shares={:.4f} px={:.4f}",
@@ -906,6 +915,7 @@ class AssetRunner:
             "market": self.market,
             "asset": self.asset,
             "interval": cfg.interval,
+            "mode": self.mode,
             "window_sec": cfg.window_sec,
             "entry_window_end_s": cfg.entry_window_end_s,
             "window": {
@@ -1008,12 +1018,20 @@ class MultiAssetRunner:
 
         # Build every configured market, including disabled ones: the Web
         # config page can turn a market on without restarting the process.
+        # A ModeBroker is wrapped per market so each one can be paper/live
+        # independently; tests that pass a plain fake broker use it directly.
         self.markets: dict[str, AssetRunner] = {}
+        broker_for = getattr(broker, "wrap", None)
         for asset_cfg in settings.assets:
+            market_broker = (
+                broker_for(asset_cfg.market)
+                if callable(broker_for)
+                else broker
+            )
             self.markets[asset_cfg.market] = AssetRunner(
                 asset_cfg,
                 settings,
-                broker,
+                market_broker,
                 cache,
                 market_service,
                 store,
@@ -1206,7 +1224,21 @@ class MultiAssetRunner:
     # ── runtime paper/live mode ────────────────────────────────────────
     @property
     def mode(self) -> str:
-        return getattr(self.broker, "mode", "paper")
+        """Summary of the enabled markets' modes ("paper"/"live"/"mixed")."""
+        modes = {
+            runner.mode
+            for runner in self.markets.values()
+            if runner.current_cfg().enabled
+        }
+        if not modes:
+            return self.runtime.mode if self.runtime is not None else "paper"
+        return modes.pop() if len(modes) == 1 else "mixed"
+
+    def mode_for(self, market: str) -> str:
+        runner = self.markets.get(str(market).upper())
+        if runner is None:
+            return self.runtime.mode if self.runtime is not None else "paper"
+        return runner.mode
 
     @property
     def is_live(self) -> bool:
@@ -1430,33 +1462,54 @@ class MultiAssetRunner:
             }
         return out
 
-    def mode_switch_block_reason(self) -> str:
-        """Why the paper/live switch is not allowed right now ("" = ok)."""
-        if self.all_positions():
-            return "open positions"
-        if any(self._entry_reservations.values()):
-            return "entry in flight"
-        for runner in self.markets.values():
+    def mode_switch_block_reason(self, market: str | None = None) -> str:
+        """Why a paper/live switch is not allowed right now ("" = ok).
+
+        With ``market`` only that market's positions/entries are checked;
+        without it the whole book must be flat.
+        """
+        if market:
+            runner = self.markets.get(str(market).upper())
+            if runner is None:
+                return "unknown market"
+            runners = [runner]
+        else:
+            runners = list(self.markets.values())
+        for runner in runners:
+            if runner.positions() or runner.pending_positions:
+                return "open positions"
             for side in runner.all_sides():
                 if side.status is SideStatus.ENTERING:
                     return "entry in flight"
+        if market is None and any(self._entry_reservations.values()):
+            return "entry in flight"
         return ""
 
-    def set_mode(self, mode: str) -> str:
+    def set_mode(self, mode: str, market: str | None = None) -> str:
+        """Switch one market to paper/live, or all markets when omitted."""
         mode = str(mode).strip().lower()
         if mode not in ("paper", "live"):
             raise ValueError("mode must be 'paper' or 'live'")
-        reason = self.mode_switch_block_reason()
+        key = str(market).strip().upper() if market else ""
+        if key and key not in self.markets:
+            raise ValueError(f"unknown market: {market}")
+        reason = self.mode_switch_block_reason(key or None)
         if reason:
             raise ValueError(f"cannot switch mode: {reason}")
         if mode == "live" and not self.live_allowed:
             raise ValueError("live mode is not enabled in .env")
         if mode == "live" and not self.live_available:
             raise ValueError("live broker is not configured")
-        self.broker.set_mode(mode)
-        if self.runtime is not None:
+        if key:
+            self.runtime.set_market_mode(key, mode)
+        else:
             self.runtime.set_mode(mode)
-        log.warning("runtime mode switched to {}", mode)
+            setter = getattr(self.broker, "set_mode", None)
+            if callable(setter):
+                setter(mode)
+        log.warning(
+            "runtime mode switched market={} mode={}", key or "ALL", mode
+        )
         return mode
 
     def enabled_markets(self) -> set[str]:
@@ -1687,6 +1740,14 @@ class MultiAssetRunner:
         """Adopt active positions; queue ended ones for settlement."""
         now = time.time()
         for pos in list(self.positions):
+            # State files written before per-market modes have no mode.
+            # Use the market's current mode as the legacy default.
+            if pos.mode not in ("paper", "live"):
+                pos.mode = (
+                    self.runtime.mode_for(pos.market)
+                    if self.runtime is not None
+                    else "paper"
+                )
             runner = self.markets.get(pos.market)
             if runner is None:
                 # The market is no longer configured.  Keep it for settlement.
@@ -1695,8 +1756,25 @@ class MultiAssetRunner:
             if pos.window_end > now:
                 # Live: the wallet balance is the source of truth.  Paper:
                 # re-register the holding in the paper ledger.
-                if self.is_live:
-                    balance = await self.broker.token_balance(pos.token_id)
+                if pos.mode == "live":
+                    if not self.live_available:
+                        log.critical(
+                            "[{}] restored live position {} but the live "
+                            "broker is unavailable; leaving it for settlement",
+                            pos.market,
+                            pos.position_id,
+                        )
+                        self._stale.append(pos)
+                        continue
+                    getter = getattr(self.broker, "token_balance_for", None)
+                    if callable(getter):
+                        balance = await getter(
+                            pos.market, pos.mode, pos.token_id
+                        )
+                    else:
+                        balance = await self.broker.token_balance(
+                            pos.token_id
+                        )
                     if balance is None:
                         log.warning(
                             "[{}] balance query failed for {}; keeping stored shares",
@@ -1928,12 +2006,15 @@ class MultiAssetRunner:
                 if runner is not None
                 else None
             )
+            settle_mode = pos.mode or "paper"
             if runtime is not None:
                 record = runtime.on_settled(
-                    payout, now, self.mode, note="gamma resolution"
+                    payout, now, settle_mode, note="gamma resolution"
                 )
             else:
-                record = _settle_orphan(pos, payout, now, self.mode)
+                record = _settle_orphan(
+                    pos, payout, now, settle_mode
+                )
             paper = getattr(self.broker, "paper", None)
             if paper is None and isinstance(self.broker, PaperBroker):
                 paper = self.broker

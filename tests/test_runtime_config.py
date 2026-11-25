@@ -226,6 +226,47 @@ def test_new_risk_caps_default_to_none_without_startup_values(tmp_path):
         assert getattr(rt, field) is None
 
 
+def test_market_modes_persist_and_reset(tmp_path):
+    s = load_settings()
+    path = tmp_path / "runtime_config.json"
+    rt = RuntimeConfig(path, s.assets, live_allowed=True)
+    assert rt.mode_for("ETH-5M") == "paper"
+    assert rt.mode_for("ETH-15M") == "paper"
+
+    rt.set_market_mode("ETH-15M", "live")
+    assert rt.mode_for("ETH-15M") == "live"
+    assert rt.mode_for("ETH-5M") == "paper"
+
+    reloaded = RuntimeConfig(path, s.assets, live_allowed=True)
+    assert reloaded.mode_for("ETH-15M") == "live"
+    assert reloaded.mode_for("ETH-5M") == "paper"
+
+    # Resetting strategy/risk parameters keeps the operator's paper/live
+    # choices (the global switch clears overrides instead).
+    reloaded.reset()
+    assert reloaded.mode_for("ETH-15M") == "live"
+    assert reloaded.mode_for("ETH-5M") == "paper"
+
+
+def test_market_mode_live_gate_and_global_switch_clears_overrides(tmp_path):
+    s = load_settings()
+    path = tmp_path / "runtime_config.json"
+    blocked = RuntimeConfig(path, s.assets, live_allowed=False)
+    with pytest.raises(ValueError):
+        blocked.set_market_mode("ETH-15M", "live")
+    with pytest.raises(ValueError):
+        blocked.set_market_mode("ETH-15M", "bogus")
+    with pytest.raises(ValueError):
+        blocked.set_market_mode("NOPE", "paper")
+
+    rt = RuntimeConfig(path, s.assets, live_allowed=True)
+    rt.set_market_mode("ETH-15M", "live")
+    assert rt.mode_for("ETH-15M") == "live"
+    rt.set_mode("paper")
+    assert rt.mode_for("ETH-15M") == "paper"
+    assert rt.market_modes == {}
+
+
 def test_mode_default_persisted_and_live_gate(tmp_path):
     s = load_settings()
     path = tmp_path / "runtime_config.json"

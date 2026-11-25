@@ -421,45 +421,25 @@ class LiveBroker:
 # ---------------------------------------------------------------------------
 
 
-class ModeBroker:
-    """Delegates fills to the paper or live broker at runtime.
+class MarketBroker:
+    """A per-market view over a shared :class:`ModeBroker`.
 
-    The live broker is built once at startup (when the environment allows
-    live trading and credentials are present); ``mode`` selects which one
-    receives new orders.  Switching is refused while positions are open or
-    an entry is in flight by the runner, and switching to paper clears the
-    paper ledger.
+    ``mode`` resolves through the parent's ``mode_for`` callback, so the
+    config page can switch one market between paper and live without
+    affecting the others.  Exits pass the position's own mode explicitly.
     """
 
-    def __init__(self, paper: PaperBroker, live: LiveBroker | None = None,
-                 mode: str = "paper") -> None:
-        self.paper = paper
-        self.live = live
-        self.mode = mode if mode in ("paper", "live") else "paper"
-        if self.mode == "live" and self.live is None:
-            self.mode = "paper"
+    def __init__(self, parent: "ModeBroker", market: str) -> None:
+        self._parent = parent
+        self.market = market
 
     @property
-    def is_live(self) -> bool:
-        return self.mode == "live" and self.live is not None
+    def mode(self) -> str:
+        return self._parent.mode_for(self.market)
 
     @property
     def live_available(self) -> bool:
-        return self.live is not None
-
-    def set_mode(self, mode: str) -> str:
-        mode = str(mode).strip().lower()
-        if mode not in ("paper", "live"):
-            raise ValueError("mode must be 'paper' or 'live'")
-        if mode == "live" and self.live is None:
-            raise RuntimeError("live broker is not configured")
-        if mode == "paper":
-            self.paper.holdings.clear()
-        self.mode = mode
-        return self.mode
-
-    def _active(self):
-        return self.live if self.is_live else self.paper
+        return self._parent.live_available
 
     async def buy(
         self,
@@ -470,8 +450,10 @@ class ModeBroker:
         fee_rate: float | None = None,
         *,
         position_id: str = "",
+        mode: str | None = None,
     ) -> Fill | None:
-        return await self._active().buy(
+        return await self._parent._buy(
+            mode or self.mode,
             token_id,
             usd_amount,
             limit_price,
@@ -489,8 +471,10 @@ class ModeBroker:
         fee_rate: float | None = None,
         *,
         position_id: str = "",
+        mode: str | None = None,
     ) -> Fill | None:
-        return await self._active().sell(
+        return await self._parent._sell(
+            mode or self.mode,
             token_id,
             shares,
             limit_price,
@@ -499,8 +483,186 @@ class ModeBroker:
             position_id=position_id,
         )
 
-    async def token_balance(self, token_id: str) -> float | None:
-        return await self._active().token_balance(token_id)
+    async def token_balance(
+        self, token_id: str, *, mode: str | None = None
+    ) -> float | None:
+        return await self._parent._token_balance(
+            mode or self.mode, token_id
+        )
+
+
+class ModeBroker:
+    """Routes fills to the paper or live broker, per market.
+
+    The live broker is built once at startup (when the environment allows
+    live trading and credentials are present).  ``mode`` is the default for
+    markets without an override; ``mode_for(market)`` supplies the
+    per-market choice and falls back to paper when live is unavailable.
+    Open positions are always routed by the mode they were opened on.
+    """
+
+    def __init__(
+        self,
+        paper: PaperBroker,
+        live: LiveBroker | None = None,
+        mode: str = "paper",
+        mode_for=None,
+    ) -> None:
+        self.paper = paper
+        self.live = live
+        self.mode = mode if mode in ("paper", "live") else "paper"
+        if self.mode == "live" and self.live is None:
+            self.mode = "paper"
+        self._mode_for = mode_for
+
+    @property
+    def is_live(self) -> bool:
+        return self.mode == "live" and self.live is not None
+
+    @property
+    def live_available(self) -> bool:
+        return self.live is not None
+
+    def mode_for(self, market: str = "") -> str:
+        """Effective mode for one market (live falls back to paper)."""
+        mode = self.mode
+        if market and self._mode_for is not None:
+            try:
+                candidate = str(self._mode_for(market)).strip().lower()
+            except Exception:  # noqa: BLE001 - config must not break routing
+                candidate = ""
+            if candidate in ("paper", "live"):
+                mode = candidate
+        if mode == "live" and self.live is None:
+            mode = "paper"
+        return mode
+
+    def wrap(self, market: str) -> MarketBroker:
+        return MarketBroker(self, market)
+
+    def set_mode(self, mode: str) -> str:
+        """Set the default mode (used when no per-market override exists)."""
+        mode = str(mode).strip().lower()
+        if mode not in ("paper", "live"):
+            raise ValueError("mode must be 'paper' or 'live'")
+        if mode == "live" and self.live is None:
+            raise RuntimeError("live broker is not configured")
+        self.mode = mode
+        return self.mode
+
+    def _select(self, mode: str):
+        return self.live if (mode == "live" and self.live is not None) else self.paper
+
+    async def _buy(
+        self,
+        mode: str,
+        token_id: str,
+        usd_amount: float,
+        limit_price: float,
+        tick_size: float,
+        fee_rate: float | None = None,
+        *,
+        position_id: str = "",
+    ) -> Fill | None:
+        return await self._select(mode).buy(
+            token_id,
+            usd_amount,
+            limit_price,
+            tick_size,
+            fee_rate=fee_rate,
+            position_id=position_id,
+        )
+
+    async def _sell(
+        self,
+        mode: str,
+        token_id: str,
+        shares: float,
+        limit_price: float,
+        tick_size: float,
+        fee_rate: float | None = None,
+        *,
+        position_id: str = "",
+    ) -> Fill | None:
+        # Never paper-sell a position that was opened live: the paper
+        # ledger has no real shares and booking it would hide the loss.
+        if mode == "live" and self.live is None:
+            raise RuntimeError("live broker unavailable for a live position")
+        return await self._select(mode).sell(
+            token_id,
+            shares,
+            limit_price,
+            tick_size,
+            fee_rate=fee_rate,
+            position_id=position_id,
+        )
+
+    async def _token_balance(
+        self, mode: str, token_id: str
+    ) -> float | None:
+        return await self._select(mode).token_balance(token_id)
+
+    async def buy(
+        self,
+        token_id: str,
+        usd_amount: float,
+        limit_price: float,
+        tick_size: float,
+        fee_rate: float | None = None,
+        *,
+        position_id: str = "",
+        market: str = "",
+        mode: str | None = None,
+    ) -> Fill | None:
+        return await self._buy(
+            mode or self.mode_for(market),
+            token_id,
+            usd_amount,
+            limit_price,
+            tick_size,
+            fee_rate=fee_rate,
+            position_id=position_id,
+        )
+
+    async def sell(
+        self,
+        token_id: str,
+        shares: float,
+        limit_price: float,
+        tick_size: float,
+        fee_rate: float | None = None,
+        *,
+        position_id: str = "",
+        market: str = "",
+        mode: str | None = None,
+    ) -> Fill | None:
+        return await self._sell(
+            mode or self.mode_for(market),
+            token_id,
+            shares,
+            limit_price,
+            tick_size,
+            fee_rate=fee_rate,
+            position_id=position_id,
+        )
+
+    async def token_balance(
+        self,
+        token_id: str,
+        *,
+        market: str = "",
+        mode: str | None = None,
+    ) -> float | None:
+        return await self._token_balance(
+            mode or self.mode_for(market), token_id
+        )
+
+    async def token_balance_for(
+        self, market: str, mode: str, token_id: str
+    ) -> float | None:
+        return await self._token_balance(
+            mode or self.mode_for(market), token_id
+        )
 
     async def collateral(self) -> float | None:
         if self.live is None:
