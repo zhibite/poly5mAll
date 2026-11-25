@@ -90,7 +90,8 @@ async def test_fak_sell_below_min_order_size_not_posted():
 
 
 @pytest.mark.asyncio
-async def test_fak_sell_below_min_notional_not_posted():
+async def test_fak_sell_below_both_minimums_not_posted():
     c = _client()
     c._client = object()
-    assert await c.place_fak_sell("tok", 5.0, 0.1, 0.01) is None
+    # 4 shares and $0.40: both the share and notional floors fail.
+    assert await c.place_fak_sell("tok", 4.0, 0.1, 0.01) is None

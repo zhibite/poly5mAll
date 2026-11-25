@@ -244,7 +244,7 @@ def test_settlement_booked_as_binary_payout():
     assert side.status is SideStatus.CLOSED
 
 
-def test_partial_tp_remainder_below_min_size_waits_for_settlement():
+def test_partial_tp_remainder_stays_holding_for_next_attempt():
     side = SideRuntime(_plan(), _window())
     e = ExecutionConfig()
     entry = Fill(
@@ -258,13 +258,14 @@ def test_partial_tp_remainder_below_min_size_waits_for_settlement():
     pos.tp_observed_source = "ws_bba"
     pos.tp_observed_ts = T0 + 179
 
-    # Leave 2.001765 shares: above one size lot, below the 5-share CLOB
-    # minimum, so it cannot be sold and must be settled.
+    # Leave 2.001765 shares.  The CLOB accepts a sell at 5+ shares OR
+    # $1+ notional, so the strategy keeps the remainder HOLDING and the
+    # next exit attempt decides with the live quote.
     fill = Fill(
         "down-token", "SELL", 27.41, 27.41 * 0.21, 0.21, 0.04, T0 + 179
     )
     assert side.on_exit_fill(fill, T0 + 179, "tp", e, "live") is None
-    assert side.status is SideStatus.SETTLE_PENDING
+    assert side.status is SideStatus.HOLDING
     assert pos.remaining_shares == pytest.approx(2.001765)
 
     record = side.on_settled(1.0, T0 + 310, "live", note="gamma resolution")

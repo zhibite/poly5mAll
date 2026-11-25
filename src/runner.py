@@ -471,21 +471,10 @@ class AssetRunner:
                 self._on_trade(record)
             self._on_state_change()
             return
-        if remaining < MIN_ORDER_SHARES - 1e-9:
-            # The CLOB refuses orders below 5 shares.  Do not retry; leave
-            # the remainder for Gamma settlement, which keeps its value.
-            side.on_dust_pending(now, reason)
-            log.warning(
-                "[{}] {} {} remainder {:.6f} < min order {:.2f}; "
-                "waiting for settlement",
-                self.asset,
-                side.plan.side.value,
-                pos.position_id,
-                remaining,
-                MIN_ORDER_SHARES,
-            )
-            self._on_state_change()
-            return
+        # The CLOB accepts a SELL at 5+ shares OR $1+ notional; only a
+        # remainder below both floors cannot be posted.  Anything else
+        # still gets a live attempt (the old AND check wrongly settled
+        # 5-share / sub-$1 remainders).
         side.status = SideStatus.EXITING
         side.last_exit_attempt = now
 
@@ -533,18 +522,20 @@ class AssetRunner:
             limit = self._force_exit_limit(quote, tick)
 
         if (
-            self.is_live
+            remaining < MIN_ORDER_SHARES - 1e-9
             and remaining * limit < MIN_ORDER_USD - 1e-9
         ):
-            # Live market SELLs must clear both the 5-share and $1 floors.
-            # A low-priced remainder cannot be posted; settle its value.
+            # Both floors fail: the CLOB will not accept this sell.  Leave
+            # the value for Gamma settlement instead of retrying.
             side.on_dust_pending(now, reason)
             log.warning(
-                "[{}] {} {} notional {:.4f}U < min order {:.2f}U; "
-                "waiting for settlement",
+                "[{}] {} {} shares {:.4f} < {:.2f} and notional {:.4f}U "
+                "< {:.2f}U; waiting for settlement",
                 self.asset,
                 side.plan.side.value,
                 pos.position_id,
+                remaining,
+                MIN_ORDER_SHARES,
                 remaining * limit,
                 MIN_ORDER_USD,
             )
@@ -671,17 +662,6 @@ class AssetRunner:
                 if record is not None:
                     self._on_trade(record)
                 continue
-            if remaining < MIN_ORDER_SHARES - 1e-9:
-                side.on_dust_pending(now, "shutdown")
-                log.warning(
-                    "[{}] {} remainder {:.6f} < min order {:.2f}; "
-                    "left for settlement",
-                    self.asset,
-                    pos.position_id,
-                    remaining,
-                    MIN_ORDER_SHARES,
-                )
-                continue
             tick = pos.tick_size if pos.tick_size > 0 else (
                 self.window.tick_size if self.window else 0.01
             )
@@ -689,15 +669,17 @@ class AssetRunner:
             if fresh is not None:
                 tick = fresh
             if (
-                self.is_live
+                remaining < MIN_ORDER_SHARES - 1e-9
                 and remaining * tick < MIN_ORDER_USD - 1e-9
             ):
                 side.on_dust_pending(now, "shutdown")
                 log.warning(
-                    "[{}] {} notional {:.4f}U < min order {:.2f}U; "
-                    "left for settlement",
+                    "[{}] {} shares {:.4f} < {:.2f} and notional "
+                    "{:.4f}U < {:.2f}U; left for settlement",
                     self.asset,
                     pos.position_id,
+                    remaining,
+                    MIN_ORDER_SHARES,
                     remaining * tick,
                     MIN_ORDER_USD,
                 )
@@ -970,7 +952,7 @@ class MultiAssetRunner:
         """
         e = self.settings.execution
         limit_total = int(e.max_same_side_positions)
-        limit_window = int(e.max_same_side_per_window)
+        limit_window = self.max_same_side_per_window
         if limit_total <= 0 and limit_window <= 0:
             return True
         window_start = int(window_start)
@@ -1019,6 +1001,30 @@ class MultiAssetRunner:
     @property
     def live_allowed(self) -> bool:
         return bool(self.settings.live)
+
+    @property
+    def max_daily_loss_usd(self) -> float:
+        """Effective daily loss cap (runtime override or startup config)."""
+        if self.runtime is not None:
+            return float(
+                getattr(
+                    self.runtime,
+                    "max_daily_loss_usd",
+                    self.settings.execution.max_daily_loss_usd,
+                )
+            )
+        return float(self.settings.execution.max_daily_loss_usd)
+
+    @property
+    def max_same_side_per_window(self) -> int:
+        """Effective same-side per-window cap (runtime override)."""
+        if self.runtime is not None:
+            value = getattr(
+                self.runtime, "max_same_side_per_window", None
+            )
+            if value is not None:
+                return int(value)
+        return int(self.settings.execution.max_same_side_per_window)
 
     def mode_switch_block_reason(self) -> str:
         """Why the paper/live switch is not allowed right now ("" = ok)."""
@@ -1099,9 +1105,10 @@ class MultiAssetRunner:
         kill_path = self.settings.resolve_path(e.kill_switch_file)
         if e.kill_switch_file and kill_path.exists():
             return False, "kill-switch"
-        if e.max_daily_loss_usd > 0:
+        limit = self.max_daily_loss_usd
+        if limit > 0:
             today = self.daily.get(day_key(time.time()))
-            if today is not None and today.realized_pnl <= -e.max_daily_loss_usd:
+            if today is not None and today.realized_pnl <= -limit:
                 return False, "daily-loss-limit"
         return True, "ok"
 
@@ -1524,9 +1531,8 @@ class MultiAssetRunner:
             "uptime_s": round(now_f - self._started_at, 1),
             "config_version": self.runtime.version,
             "max_same_side_positions": self.settings.execution.max_same_side_positions,
-            "max_same_side_per_window": (
-                self.settings.execution.max_same_side_per_window
-            ),
+            "max_same_side_per_window": self.max_same_side_per_window,
+            "max_daily_loss_usd": self.max_daily_loss_usd,
             "same_side_open": {
                 "UP": self.same_side_open(Side.UP),
                 "DOWN": self.same_side_open(Side.DOWN),

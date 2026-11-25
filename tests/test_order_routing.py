@@ -127,6 +127,17 @@ async def test_clob_sell_keeps_token_id_for_legacy_market():
     assert args.position_id is None
 
 
+@pytest.mark.asyncio
+async def test_clob_sell_at_five_shares_below_one_dollar_is_posted():
+    """The CLOB floor is 5 shares OR $1, not both."""
+    client, fake = _sdk_client()
+    fill = await client.place_fak_sell("token-down", 5.0, 0.1, 0.01)
+
+    assert fill is not None
+    args, _kwargs = fake.market_orders[0]
+    assert args.amount == pytest.approx(5.0)
+
+
 # ---------------------------------------------------------------------------
 # Live broker forwards the position id
 # ---------------------------------------------------------------------------

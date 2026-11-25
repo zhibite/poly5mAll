@@ -60,6 +60,44 @@ def test_update_enable_eth_and_persist(tmp_path):
     assert reloaded.version >= 1
 
 
+def test_daily_loss_cap_update_and_persist(tmp_path):
+    s = load_settings()
+    path = tmp_path / "runtime_config.json"
+    rt = RuntimeConfig(path, s.assets, max_daily_loss_usd=20.0)
+    assert rt.max_daily_loss_usd == pytest.approx(20.0)
+
+    rt.update({"max_daily_loss_usd": 10.0})
+    assert rt.max_daily_loss_usd == pytest.approx(10.0)
+
+    reloaded = RuntimeConfig(path, s.assets, max_daily_loss_usd=20.0)
+    assert reloaded.max_daily_loss_usd == pytest.approx(10.0)
+
+    with pytest.raises(ValueError):
+        rt.update({"max_daily_loss_usd": -1})
+
+    reloaded.reset()
+    assert reloaded.max_daily_loss_usd == pytest.approx(20.0)
+
+
+def test_same_side_per_window_cap_update_and_persist(tmp_path):
+    s = load_settings()
+    path = tmp_path / "runtime_config.json"
+    rt = RuntimeConfig(path, s.assets, max_same_side_per_window=2)
+    assert rt.max_same_side_per_window == 2
+
+    rt.update({"max_same_side_per_window": 1})
+    assert rt.max_same_side_per_window == 1
+
+    reloaded = RuntimeConfig(path, s.assets, max_same_side_per_window=2)
+    assert reloaded.max_same_side_per_window == 1
+
+    with pytest.raises(ValueError):
+        rt.update({"max_same_side_per_window": -1})
+
+    reloaded.reset()
+    assert reloaded.max_same_side_per_window == 2
+
+
 def test_mode_default_persisted_and_live_gate(tmp_path):
     s = load_settings()
     path = tmp_path / "runtime_config.json"

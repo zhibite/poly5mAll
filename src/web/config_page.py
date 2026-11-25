@@ -61,6 +61,26 @@ _BODY = r"""
   </div>
 </div>
 
+<div class="section">
+  <h2>全局风控</h2>
+  <div class="controls" style="margin:0">
+    <span>当日亏损上限
+      <input id="daily-loss" type="number" min="0" step="1"
+             style="width:90px" value="20"> U
+    </span>
+    <span class="control-meta">按 UTC 日统计；当天已实现净亏损达到该值后
+      停止新开仓（0=不限制），已有仓位照常管理。</span>
+  </div>
+  <div class="controls" style="margin:8px 0 0">
+    <span>单窗同向上限
+      <input id="window-side-limit" type="number" min="0" step="1"
+             style="width:80px" value="2"> 笔
+    </span>
+    <span class="control-meta">同一 5m 窗口内同方向最多 N 笔
+      （含在途入场，0=不限），从下一个 5m 窗口生效。</span>
+  </div>
+</div>
+
 <div class="alert info">
   <b>生效时机：</b>启用/关闭 <b>立即</b> 阻止/允许新开仓；方向、entry、TP、每笔仓位、
   强平时间在 <b>下一个 5m 窗口</b> 生效。已有仓位始终按原参数止盈/强平。
@@ -212,6 +232,8 @@ function render() {
   $('enabled-count').textContent = enabled + ' / ' + (cfg.assets || []).length;
   $('entries').textContent = cfg.paused ? '已暂停' : '允许';
   $('entries').className = 'stat-value ' + (cfg.paused ? 'red' : 'green');
+  $('daily-loss').value = cfg.max_daily_loss_usd ?? 20;
+  $('window-side-limit').value = cfg.max_same_side_per_window ?? 2;
   renderMode(cfg);
   renderTiming(cfg);
 
@@ -321,7 +343,19 @@ function collect() {
       force_exit_deadline_s: forceDeadline,
     };
   }
-  return {assets};
+  const dailyLoss = Number($('daily-loss').value);
+  if (!(dailyLoss >= 0)) {
+    throw new Error('当日亏损上限必须 >= 0（0 = 不限制）');
+  }
+  const windowSideLimit = Number($('window-side-limit').value);
+  if (!(Number.isInteger(windowSideLimit) && windowSideLimit >= 0)) {
+    throw new Error('单窗同向上限必须是 >= 0 的整数（0 = 不限制）');
+  }
+  return {
+    assets,
+    max_daily_loss_usd: dailyLoss,
+    max_same_side_per_window: windowSideLimit,
+  };
 }
 
 $('mode-switch').onclick = async () => {

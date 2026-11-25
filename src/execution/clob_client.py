@@ -241,13 +241,13 @@ class CLOBClient:
         if not self._client:
             return None
         price = _round_down(limit_price, tick_size)
-        # CLOB market orders size in 0.01-share lots and require at least
-        # 5 shares and $1 notional; smaller orders are rejected.
+        # CLOB market orders size in 0.01-share lots.  A sell is accepted
+        # when it is at least 5 shares OR at least $1 notional; refuse only
+        # when both floors fail.
         size = _round_down(shares, SIZE_PRECISION)
-        if (
-            price <= 0
-            or size < MIN_ORDER_SHARES - 1e-9
-            or size * price < MIN_ORDER_USD - 1e-9
+        if price <= 0 or (
+            size < MIN_ORDER_SHARES - 1e-9
+            and size * price < MIN_ORDER_USD - 1e-9
         ):
             return None
         try:

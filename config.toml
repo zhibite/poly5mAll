@@ -97,8 +97,9 @@ SLIPPAGE_PCT = 2.0
 # Override without rebuilding with the MAX_SPREAD_ABS environment variable.
 MAX_SPREAD_ABS = 0.01
 
-# Optional risk limits.  0 disables.
-MAX_DAILY_LOSS_USD = 0.0
+# Stop opening new positions once the UTC day's realized net PnL is at or
+# below -MAX_DAILY_LOSS_USD.  0 disables.  Editable on /config.
+MAX_DAILY_LOSS_USD = 20.0
 # A file whose presence pauses NEW entries (exits still run).
 KILL_SWITCH_FILE = "data/STOP"
 PAUSE_NEW_ENTRIES = false

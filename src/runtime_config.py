@@ -124,6 +124,8 @@ class RuntimeConfig:
         *,
         default_mode: str = "paper",
         live_allowed: bool = False,
+        max_daily_loss_usd: float | None = None,
+        max_same_side_per_window: int | None = None,
     ) -> None:
         self.path = Path(path) if path else None
         self.base: dict[str, AssetConfig] = {
@@ -141,6 +143,18 @@ class RuntimeConfig:
         self.mode = self._default_mode
         if self.mode == "live" and not self.live_allowed:
             self.mode = "paper"
+        self._default_max_daily_loss = (
+            max(0.0, float(max_daily_loss_usd))
+            if max_daily_loss_usd is not None else 0.0
+        )
+        self.max_daily_loss_usd = self._default_max_daily_loss
+        self._default_max_same_side_per_window = (
+            max(0, int(max_same_side_per_window))
+            if max_same_side_per_window is not None else None
+        )
+        self.max_same_side_per_window = (
+            self._default_max_same_side_per_window
+        )
         self.load()
 
     # ── reads ──────────────────────────────────────────────────────────
@@ -192,8 +206,34 @@ class RuntimeConfig:
 
     # ── writes ─────────────────────────────────────────────────────────
     def update(self, payload: dict[str, Any]) -> list[dict[str, Any]]:
-        """Apply ``{"assets": {NAME: {...}}}`` and persist."""
-        assets_raw = payload.get("assets", payload)
+        """Apply ``{"assets": {NAME: {...}}}`` / global risk fields."""
+        if not isinstance(payload, dict):
+            raise ValueError("payload must be an object")
+        has_global = "max_daily_loss_usd" in payload
+        if has_global:
+            try:
+                limit = float(payload["max_daily_loss_usd"])
+            except (TypeError, ValueError) as exc:
+                raise ValueError(
+                    "max_daily_loss_usd must be a number"
+                ) from exc
+            if limit < 0:
+                raise ValueError("max_daily_loss_usd must be >= 0")
+            self.max_daily_loss_usd = limit
+        if "max_same_side_per_window" in payload:
+            try:
+                window_limit = int(payload["max_same_side_per_window"])
+            except (TypeError, ValueError) as exc:
+                raise ValueError(
+                    "max_same_side_per_window must be an integer"
+                ) from exc
+            if window_limit < 0:
+                raise ValueError(
+                    "max_same_side_per_window must be >= 0"
+                )
+            self.max_same_side_per_window = window_limit
+        has_global = has_global or "max_same_side_per_window" in payload
+        assets_raw = payload.get("assets", {} if has_global else payload)
         if not isinstance(assets_raw, dict):
             raise ValueError("assets must be an object")
         unknown = [k for k in assets_raw if str(k).upper() not in self.base]
@@ -238,12 +278,19 @@ class RuntimeConfig:
 
     def reset(self) -> list[dict[str, Any]]:
         self.overrides = {}
+        self.max_daily_loss_usd = self._default_max_daily_loss
+        self.max_same_side_per_window = (
+            self._default_max_same_side_per_window
+        )
         self.version += 1
         self.updated_at = time.time()
         if self.path is not None:
-            if self.mode != self._default_mode:
-                # Keep a non-default paper/live selection across a reset of
-                # the asset overrides.
+            if (self.mode != self._default_mode
+                    or self.max_daily_loss_usd != self._default_max_daily_loss
+                    or self.max_same_side_per_window
+                    != self._default_max_same_side_per_window):
+                # Keep a non-default paper/live selection or risk cap across
+                # a reset of the asset overrides.
                 self._save()
             else:
                 try:
@@ -272,6 +319,20 @@ class RuntimeConfig:
             self.mode = "paper"
         elif mode == "live" and self.live_allowed:
             self.mode = "live"
+        if raw.get("max_daily_loss_usd") is not None:
+            try:
+                limit = float(raw["max_daily_loss_usd"])
+            except (TypeError, ValueError):
+                limit = self._default_max_daily_loss
+            if limit >= 0:
+                self.max_daily_loss_usd = limit
+        if raw.get("max_same_side_per_window") is not None:
+            try:
+                window_limit = int(raw["max_same_side_per_window"])
+            except (TypeError, ValueError):
+                window_limit = self._default_max_same_side_per_window
+            if window_limit is not None and window_limit >= 0:
+                self.max_same_side_per_window = window_limit
         assets_raw = raw.get("assets") or {}
         if not isinstance(assets_raw, dict):
             return
@@ -307,6 +368,8 @@ class RuntimeConfig:
             "version": max(1, self.version),
             "updated_at": self.updated_at or time.time(),
             "mode": self.mode,
+            "max_daily_loss_usd": self.max_daily_loss_usd,
+            "max_same_side_per_window": self.max_same_side_per_window,
             "assets": {
                 row["asset"]: {
                     "enabled": row["enabled"],

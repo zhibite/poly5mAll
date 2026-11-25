@@ -201,7 +201,9 @@ class ExecutionConfig:
     exit_retry_s: float = 1.0
     slippage_pct: float = 2.0
     max_spread_abs: float = 0.0
-    max_daily_loss_usd: float = 0.0
+    # Stop opening new positions once the UTC day's realized net PnL is at
+    # or below -MAX_DAILY_LOSS_USD.  0 disables the cap.
+    max_daily_loss_usd: float = 20.0
     kill_switch_file: str = "data/STOP"
     pause_new_entries: bool = False
     flatten_on_exit: bool = False
@@ -503,7 +505,7 @@ def load_settings(config_path: str | Path | None = None) -> Settings:
         ),
         max_daily_loss_usd=_env_float(
             "MAX_DAILY_LOSS_USD",
-            _as_float(_get(exec_raw, "MAX_DAILY_LOSS_USD", 0.0), 0.0),
+            _as_float(_get(exec_raw, "MAX_DAILY_LOSS_USD", 20.0), 20.0),
         ),
         kill_switch_file=_env(
             "KILL_SWITCH_FILE",
@@ -795,6 +797,8 @@ def validate_settings(settings: Settings) -> None:
         raise ConfigError("BOOK_POLL_S must be >= 0.5")
     if e.max_spread_abs < 0:
         raise ConfigError("MAX_SPREAD_ABS must be >= 0")
+    if e.max_daily_loss_usd < 0:
+        raise ConfigError("MAX_DAILY_LOSS_USD must be >= 0")
 
     w = settings.web
     if w.enabled:

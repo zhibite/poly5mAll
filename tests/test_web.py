@@ -155,11 +155,14 @@ def test_config_defaults_and_update(client):
                     "force_exit_s": 120,
                     "force_exit_deadline_s": 135,
                 }
-            }
+            },
+            "max_daily_loss_usd": 15,
+            "max_same_side_per_window": 3,
         },
     )
     assert r.status_code == 200, r.text
     data = r.json()
+    assert data["max_same_side_per_window"] == 3
     by_name = {a["asset"]: a for a in data["assets"]}
     assert by_name["ETH"]["enabled"] is True
     assert by_name["ETH"]["entry_thresh"] == pytest.approx(0.2)
@@ -167,6 +170,7 @@ def test_config_defaults_and_update(client):
     assert by_name["ETH"]["stake_usd"] == pytest.approx(5.0)
     assert by_name["ETH"]["force_exit_s"] == pytest.approx(120.0)
     assert by_name["ETH"]["force_exit_deadline_s"] == pytest.approx(135.0)
+    assert data["max_daily_loss_usd"] == pytest.approx(15.0)
 
     r = client.post("/api/config/reset")
     assert r.status_code == 200

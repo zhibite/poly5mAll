@@ -19,7 +19,6 @@ from dataclasses import dataclass
 
 from src.config import ExecutionConfig, FeedConfig, GeneralConfig
 from src.models import (
-    MIN_ORDER_SHARES,
     SIZE_PRECISION,
     Fill,
     MarketWindow,
@@ -209,16 +208,12 @@ class SideRuntime:
         written_off = 0.0
         if not position.is_flat:
             # A remainder below one size lot is worth <1 cent and is
-            # written off.  A remainder below the CLOB minimum (5 shares)
-            # cannot be sold but may still be worth real money, so leave
-            # it for Gamma settlement instead of retrying or zeroing it.
+            # written off.  Any larger remainder stays HOLDING: the CLOB
+            # accepts a sell at 5+ shares OR $1+ notional, so the next
+            # attempt decides with the live quote whether it can post.
             if 0 < dust < SIZE_PRECISION - 1e-9:
                 position.sold_shares = position.shares
                 written_off = dust
-            elif dust < MIN_ORDER_SHARES - 1e-9:
-                self.status = SideStatus.SETTLE_PENDING
-                self.closed_reason = "remainder_pending"
-                return None
             else:
                 self.status = SideStatus.HOLDING
                 return None

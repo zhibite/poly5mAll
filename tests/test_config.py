@@ -39,6 +39,7 @@ def test_doc_defaults_load():
     assert s.execution.min_entry_bid_depth_usd == pytest.approx(5.0)
     assert s.execution.max_same_side_positions == 6
     assert s.execution.max_same_side_per_window == 2
+    assert s.execution.max_daily_loss_usd == pytest.approx(20.0)
     assert s.feed.ws_shards == 7
     assert s.feed.book_poll_s == pytest.approx(3.0)
     assert s.mode == "paper"

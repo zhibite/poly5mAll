@@ -297,9 +297,16 @@ def create_app(
             "require_two_sided_book": e.require_two_sided_book,
             "min_entry_bid_depth_usd": e.min_entry_bid_depth_usd,
             "max_same_side_positions": e.max_same_side_positions,
-            "max_same_side_per_window": e.max_same_side_per_window,
+            "max_same_side_per_window": (
+                getattr(runtime, "max_same_side_per_window", None)
+                if getattr(runtime, "max_same_side_per_window", None)
+                is not None
+                else e.max_same_side_per_window
+            ),
             "skip_fee_negative": e.skip_fee_negative,
-            "max_daily_loss_usd": e.max_daily_loss_usd,
+            "max_daily_loss_usd": getattr(
+                runtime, "max_daily_loss_usd", e.max_daily_loss_usd
+            ),
             "timing": {
                 "window_sec": settings.general.window_sec,
                 "entry_window_end_s": settings.general.entry_window_end_s,

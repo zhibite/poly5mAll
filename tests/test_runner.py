@@ -747,10 +747,45 @@ async def test_live_remainder_below_min_notional_waits(tmp_path):
     await runner.tick(T0 + 10)
     pos = runner.sides[0].position
     assert pos is not None
-    pos.sold_shares = pos.shares - 5.0
+    # 4 shares AND $0.04: both floors fail, so the CLOB cannot accept it.
+    pos.sold_shares = pos.shares - 4.0
     cache.set_best_bid_ask("down-token", 0.01, 0.02, ts=T0 + 250)
 
     await runner.tick(T0 + 250)
     assert broker.sells == []
     assert trades == []
     assert runner.sides[0].status is SideStatus.SETTLE_PENDING
+
+
+async def test_live_five_share_remainder_is_posted(tmp_path):
+    """5 shares meets the CLOB share floor even when notional < $1."""
+    settings = _settings()
+    settings = dataclasses.replace(
+        settings,
+        execution=dataclasses.replace(
+            settings.execution, paper_trading=False, live_enabled=True
+        ),
+    )
+    cache = PriceCache()
+    cache.set_best_bid_ask("down-token", 0.23, 0.24, ts=T0 + 10)
+    broker = LiveFakeBroker()
+    runner = AssetRunner(
+        settings.assets[0],
+        settings,
+        broker,
+        cache,
+        FakeMarketService(_window()),
+        StateStore(tmp_path),
+        can_enter=lambda side: (True, "ok"),
+        on_trade=lambda r: None,
+        on_state_change=lambda: None,
+    )
+    await runner.tick(T0 + 10)
+    pos = runner.sides[0].position
+    assert pos is not None
+    pos.sold_shares = pos.shares - 5.0  # 5 shares x $0.01 = $0.05
+    cache.set_best_bid_ask("down-token", 0.01, 0.02, ts=T0 + 250)
+
+    await runner.tick(T0 + 250)
+    assert len(broker.sells) == 1
+    assert broker.sells[0][1] == pytest.approx(5.0)

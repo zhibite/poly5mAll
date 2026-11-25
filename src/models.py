@@ -13,6 +13,8 @@ from typing import Any
 # is written off; anything else that cannot meet both floors is left for
 # Gamma settlement.
 SIZE_PRECISION = 0.01
+# The CLOB accepts a SELL when it is at least 5 shares OR at least $1
+# notional.  Both floors are listed here; callers must use OR, not AND.
 MIN_ORDER_SHARES = 5.0
 MIN_ORDER_USD = 1.0
 
